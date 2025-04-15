@@ -1,0 +1,172 @@
+// File: src/main/java/org/example/iam/entity/Oauth2Config.java
+package org.example.iam.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.example.iam.audit.Auditable; // Base class for audit fields
+import org.hibernate.annotations.GenericGenerator;
+// Removed unused JdbcTypeCode/SqlTypes imports
+
+import java.util.UUID;
+
+/**
+ * Represents the persisted configuration for an OAuth 2.0 Client specific to an Organization.
+ * <p>
+ * This entity stores details needed to interact with an external OAuth 2.0 / OpenID Connect
+ * provider (e.g., Google, GitHub, Okta) for enabling Single Sign-On (SSO) for users
+ * belonging to the associated organization.
+ * </p>
+ * <p>
+ * It extends {@link Auditable} to track creation and modification history.
+ * There is a one-to-one relationship with the {@link Organization} entity.
+ * </p>
+ * <p>
+ * **Security Note:** The {@code clientSecret} field should **not** store plain text secrets
+ * in a production environment. Use a secure vault or encryption mechanism and store only a
+ * reference or the encrypted value here.
+ * </p>
+ */
+@Entity
+@Table(name = "oauth2_configs", indexes = {
+        // Unique constraint ensuring only one OAuth2 config per organization
+        @Index(name = "idx_oauth2_config_org_id", columnList = "organization_id", unique = true),
+        // Index on provider name for potential lookups (e.g., finding all Google configs)
+        @Index(name = "idx_oauth2_config_provider", columnList = "provider")
+})
+@Getter
+@Setter
+@NoArgsConstructor // Required by JPA
+@AllArgsConstructor // Useful for @Builder
+@Builder(toBuilder = true) // Allows copying and modifying using builder pattern
+@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true) // Include ID and consider Auditable fields
+public class Oauth2Config extends Auditable<String> { // Audited by String (username/SYSTEM)
+
+  /**
+   * Primary key (UUID) for the OAuth2 configuration record.
+   */
+  @Id
+  @GeneratedValue(generator = "UUID") // Use standard Hibernate UUID generator
+  @GenericGenerator(name = "UUID", strategy = "org.hibernate.id.UUIDGenerator")
+  @Column(name = "id", updatable = false, nullable = false, columnDefinition = "BINARY(16)")
+  @EqualsAndHashCode.Include // Use ID for equality checks
+  private UUID id;
+
+  /**
+   * The Organization to which this OAuth2 configuration applies.
+   * Establishes a unique, mandatory one-to-one link. Fetched lazily by default.
+   */
+  @OneToOne(fetch = FetchType.LAZY, optional = false)
+  @JoinColumn(name = "organization_id", nullable = false, unique = true,
+          // Define foreign key constraint for clarity and DB integrity
+          foreignKey = @ForeignKey(name = "fk_oauth2_config_organization"))
+  @ToString.Exclude // Avoid recursion in toString
+  private Organization organization;
+
+  /**
+   * Identifier for the specific OAuth2 provider configuration (e.g., "google", "github", "custom-okta").
+   * Used as part of the Spring Security registration ID.
+   */
+  @Column(name = "provider", nullable = false, length = 50)
+  private String provider;
+
+  /**
+   * The Client ID obtained from the OAuth2 provider.
+   */
+  @Column(name = "client_id", nullable = false, length = 255)
+  private String clientId;
+
+  /**
+   * The Client Secret obtained from the OAuth2 provider.
+   * **WARNING:** Storing plain text secrets is insecure. Implement secure storage (vault/encryption).
+   * This field currently acts as a placeholder.
+   */
+  @Column(name = "client_secret", nullable = false, length = 512) // Increased length for potential encrypted values
+  @ToString.Exclude // Exclude sensitive information from default toString()
+  private String clientSecret; // Placeholder - Needs secure handling!
+
+  /**
+   * The Authorization Endpoint URL of the provider.
+   * Often required for 'custom' provider types not known by Spring Security defaults.
+   */
+  @Column(name = "authorization_uri", length = 1024, nullable = true)
+  private String authorizationUri;
+
+  /**
+   * The Token Endpoint URL of the provider.
+   * Often required for 'custom' provider types.
+   */
+  @Column(name = "token_uri", length = 1024, nullable = true)
+  private String tokenUri;
+
+  /**
+   * The UserInfo Endpoint URL of the provider.
+   * Used to fetch user attributes after authentication if not fully available in the ID token.
+   */
+  @Column(name = "user_info_uri", length = 1024, nullable = true)
+  private String userInfoUri;
+
+  /**
+   * The JSON Web Key (JWK) Set URI of the provider.
+   * Used to retrieve public keys for verifying the signature of ID tokens or JWTs issued by the provider.
+   */
+  @Column(name = "jwk_set_uri", length = 1024, nullable = true)
+  private String jwkSetUri;
+
+  /**
+   * The Redirect URI template used for the OAuth2 flow. Spring Security typically resolves
+   * placeholders like {baseUrl} and {registrationId}.
+   * Example: "{baseUrl}/login/oauth2/code/{registrationId}"
+   */
+  @Column(name = "redirect_uri_template", length = 1024, nullable = true)
+  private String redirectUriTemplate;
+
+  /**
+   * Comma-separated list of OAuth2 scopes requested during the authorization flow.
+   * Determines the permissions granted and information returned. Common defaults are included.
+   */
+  @Column(name = "scopes", length = 512, nullable = true)
+  @Builder.Default
+  private String scopes = "openid,profile,email"; // Common OpenID Connect scopes
+
+  /**
+   * The name of the attribute in the UserInfo response or ID token to use as the primary
+   * identifier (username/subject) for the authenticated principal. Defaults to 'sub'.
+   */
+  @Column(name = "user_name_attribute_name", length = 100, nullable = true)
+  @Builder.Default
+  private String userNameAttributeName = "sub"; // Standard OIDC claim for subject identifier
+
+  /**
+   * The name of the attribute in the UserInfo response or ID token containing the user's email.
+   * Defaults to 'email'.
+   */
+  @Column(name = "user_email_attribute_name", length = 100, nullable = true)
+  @Builder.Default
+  private String userEmailAttributeName = "email"; // Common claim for email
+
+  /**
+   * Flag indicating whether OAuth2 login via this provider configuration is enabled for the organization.
+   */
+  @Column(name = "enabled", nullable = false)
+  @Builder.Default
+  private boolean enabled = false;
+
+  /**
+   * Provides a concise string representation of the Oauth2Config, useful for logging.
+   * Excludes the client secret.
+   *
+   * @return A string representation of the configuration.
+   */
+  @Override
+  public String toString() {
+    return "Oauth2Config{" +
+            "id=" + id +
+            ", organizationId=" + (organization != null ? organization.getId() : null) +
+            ", provider='" + provider + '\'' +
+            ", clientId='" + clientId + '\'' + // Avoid logging secret
+            ", enabled=" + enabled +
+            ", createdDate=" + createdDate + // Include audit info
+            ", lastModifiedDate=" + lastModifiedDate +
+            '}';
+  }
+}
