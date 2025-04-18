@@ -56,9 +56,9 @@ public class OrganizationController {
   @Operation(summary = "Create Organization",
           description = "Creates a new organization (tenant). This operation requires the SUPER role.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "201", description = ApiResponseMessages.ORG_CREATED_SUCCESS,
+          @ApiResponse(responseCode = "201", description = ApiResponseMessages.ORG_CREATED_SUCCESS, // Use constant
                   content = @Content(mediaType = "application/json",
-                          schema = @Schema(implementation = ApiResponse.class))), // Ref standard response
+                          schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "400", description = ApiErrorMessages.INVALID_INPUT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
@@ -80,7 +80,7 @@ public class OrganizationController {
 
     OrgResponse createdOrg = organizationService.createOrganization(createOrgRequest, actorUsername);
 
-    ApiSuccessResponse<OrgResponse> response = ApiSuccessResponse.created(createdOrg, ApiResponseMessages.ORG_CREATED_SUCCESS);
+    ApiSuccessResponse<OrgResponse> response = ApiSuccessResponse.created(createdOrg, ApiResponseMessages.ORG_CREATED_SUCCESS); // Use constant
     // Return 201 Created status
     return ResponseEntity.status(HttpStatus.CREATED).body(response);
   }
@@ -95,8 +95,8 @@ public class OrganizationController {
   @Operation(summary = "Get Organization by ID",
           description = "Retrieves details for a specific organization. Requires authentication. SUPER users can get any org, while ADMIN/USER users can only retrieve their own organization's details.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_RETRIEVED_SUCCESS,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_RETRIEVED_SUCCESS, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "403", description = ApiErrorMessages.ACCESS_DENIED, // If user tries to access other org
@@ -119,7 +119,7 @@ public class OrganizationController {
     // Service layer performs authorization check (isSuper or isMemberOfOrg)
     OrgResponse orgResponse = organizationService.getOrganizationById(orgId, actorUsername, actorOrgId, actorRoles);
 
-    ApiSuccessResponse<OrgResponse> response = ApiSuccessResponse.ok(orgResponse, ApiResponseMessages.ORG_RETRIEVED_SUCCESS);
+    ApiSuccessResponse<OrgResponse> response = ApiSuccessResponse.ok(orgResponse, ApiResponseMessages.ORG_RETRIEVED_SUCCESS); // Use constant
     return ResponseEntity.ok(response);
   }
 
@@ -131,7 +131,7 @@ public class OrganizationController {
   @Operation(summary = "Get All Organizations",
           description = "Retrieves a list of all organizations in the system. Requires SUPER role.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ALL_ORGS_RETRIEVED_SUCCESS,
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ALL_ORGS_RETRIEVED_SUCCESS, // Use constant
                   content = @Content(mediaType = "application/json",
                           array = @ArraySchema(schema = @Schema(implementation = OrgResponse.class)))), // Note array schema
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
@@ -147,7 +147,7 @@ public class OrganizationController {
 
     List<OrgResponse> organizations = organizationService.getAllOrganizations(actorUsername);
 
-    ApiSuccessResponse<List<OrgResponse>> response = ApiSuccessResponse.ok(organizations, ApiResponseMessages.ALL_ORGS_RETRIEVED_SUCCESS);
+    ApiSuccessResponse<List<OrgResponse>> response = ApiSuccessResponse.ok(organizations, ApiResponseMessages.ALL_ORGS_RETRIEVED_SUCCESS); // Use constant
     return ResponseEntity.ok(response);
   }
 
@@ -163,8 +163,8 @@ public class OrganizationController {
   @Operation(summary = "Update Organization",
           description = "Updates an existing organization's mutable properties (e.g., name, login type). Requires SUPER role, or ADMIN role of the specific organization. Domain cannot be changed here.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_UPDATED_SUCCESS,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_UPDATED_SUCCESS, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "400", description = ApiErrorMessages.INVALID_INPUT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
@@ -192,7 +192,7 @@ public class OrganizationController {
     OrgResponse updatedOrg = organizationService.updateOrganization(orgId, updateOrgRequest,
             actorUsername, actorOrgId, actorRoles);
 
-    ApiSuccessResponse<OrgResponse> response = ApiSuccessResponse.ok(updatedOrg, ApiResponseMessages.ORG_UPDATED_SUCCESS);
+    ApiSuccessResponse<OrgResponse> response = ApiSuccessResponse.ok(updatedOrg, ApiResponseMessages.ORG_UPDATED_SUCCESS); // Use constant
     return ResponseEntity.ok(response);
   }
 
@@ -207,8 +207,8 @@ public class OrganizationController {
           description = "Deletes an existing organization and all associated data (users, configs). Requires SUPER role. Cannot delete the Super Organization. This is irreversible.")
   @ApiResponses(value = {
           // Use 200 OK with message for consistency, though 204 No Content is also valid for DELETE
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_DELETED_SUCCESS,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_DELETED_SUCCESS, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           // @ApiResponse(responseCode = "204", description = "Organization deleted successfully (No Content)"), // Alternative
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
@@ -230,7 +230,7 @@ public class OrganizationController {
     organizationService.deleteOrganization(orgId, actorUsername);
 
     // Build success response (200 OK with message)
-    ApiSuccessResponse<Void> response = ApiSuccessResponse.ok(ApiResponseMessages.ORG_DELETED_SUCCESS);
+    ApiSuccessResponse<Void> response = ApiSuccessResponse.ok(ApiResponseMessages.ORG_DELETED_SUCCESS); // Use constant
     log.info("Organization ID '{}' successfully deleted by actor '{}'.", orgId, actorUsername);
 
     // Alternative: Return 204 No Content (no response body)

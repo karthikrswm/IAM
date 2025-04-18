@@ -50,6 +50,32 @@ public class UserController {
 
   private final UserService userService;
 
+
+  /**
+   * Retrieves details for the currently authenticated user ("me").
+   * Delegates fetching and DTO mapping to the UserService within a transaction. // <<< Updated Doc
+   * Requires authentication.
+   *
+   * @return ResponseEntity containing ApiResponse<UserResponse> or ApiError.
+   */
+  @Operation(summary = "Get Current User Details",
+          description = "Retrieves the profile details for the currently authenticated user.")
+  @ApiResponses(value = { /* ... ApiResponses ... */
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.USER_RETRIEVED_SUCCESS, content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))),
+          @ApiResponse(responseCode = "401", description = ApiErrorMessages.AUTHENTICATION_FAILED + " / " + ApiErrorMessages.INVALID_JWT, content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
+          @ApiResponse(responseCode = "404", description = ApiErrorMessages.USER_NOT_FOUND_USERNAME, content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
+  })
+  @GetMapping("/users/me")
+  @PreAuthorize("isAuthenticated()")
+  public ResponseEntity<ApiSuccessResponse<UserResponse>> getCurrentUser() {
+    log.info("Request received for current user details.");
+    // Delegate fetching and mapping to the transactional service method
+    UserResponse userResponse = userService.getCurrentUserDto(); // <<< UPDATED Call
+    ApiSuccessResponse<UserResponse> response = ApiSuccessResponse.ok(userResponse, ApiResponseMessages.USER_RETRIEVED_SUCCESS);
+    return ResponseEntity.ok(response);
+  }
+
+
   /**
    * Creates a new user within a specified organization.
    * Requires ADMIN role of the target organization or SUPER role.
@@ -61,17 +87,20 @@ public class UserController {
   @Operation(summary = "Create User",
           description = "Creates a new user account within a specified organization. Requires SUPER role, or ADMIN role of the target organization. Sends verification email.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "201", description = ApiResponseMessages.USER_CREATED_SUCCESS,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "201", description = ApiResponseMessages.USER_CREATED_SUCCESS, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "400", description = ApiErrorMessages.INVALID_INPUT + " / " + ApiErrorMessages.INVALID_EMAIL_DOMAIN,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "403", description = ApiErrorMessages.ACCESS_DENIED + " / " + ApiErrorMessages.INVALID_ROLE_ASSIGNMENT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
-          @ApiResponse(responseCode = "404", description = ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID,
+          @ApiResponse(responseCode = "404", description = ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID + " / " + ApiErrorMessages.ROLE_NOT_FOUND, // Add role not found possibility
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "409", description = ApiErrorMessages.USERNAME_ALREADY_EXISTS + " / " + ApiErrorMessages.EMAIL_ALREADY_EXISTS,
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
+          // Add 500 for ConfigurationException (role not found)
+          @ApiResponse(responseCode = "500", description = ApiErrorMessages.CONFIGURATION_ERROR,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
   })
   @PostMapping("/users")
@@ -88,7 +117,7 @@ public class UserController {
 
     UserResponse createdUser = userService.createUser(createUserRequest, actorUsername, actorOrgId, actorRoles);
 
-    ApiSuccessResponse<UserResponse> response = ApiSuccessResponse.created(createdUser, ApiResponseMessages.USER_CREATED_SUCCESS);
+    ApiSuccessResponse<UserResponse> response = ApiSuccessResponse.created(createdUser, ApiResponseMessages.USER_CREATED_SUCCESS); // Use constant
     return ResponseEntity.status(HttpStatus.CREATED).body(response);
   }
 
@@ -102,8 +131,8 @@ public class UserController {
   @Operation(summary = "Get User by ID",
           description = "Retrieves details for a specific user. Requires authentication. Access allowed for SUPER users, ADMIN of the user's org, or the user themselves.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.USER_RETRIEVED_SUCCESS,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.USER_RETRIEVED_SUCCESS, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "403", description = ApiErrorMessages.ACCESS_DENIED,
@@ -124,7 +153,7 @@ public class UserController {
 
     UserResponse user = userService.getUserById(userId, actorUsername, actorOrgId, actorRoles);
 
-    ApiSuccessResponse<UserResponse> response = ApiSuccessResponse.ok(user, ApiResponseMessages.USER_RETRIEVED_SUCCESS);
+    ApiSuccessResponse<UserResponse> response = ApiSuccessResponse.ok(user, ApiResponseMessages.USER_RETRIEVED_SUCCESS); // Use constant
     return ResponseEntity.ok(response);
   }
 
@@ -139,9 +168,9 @@ public class UserController {
   @Operation(summary = "Update User Profile",
           description = "Updates mutable profile details for a user (e.g., secondary email, phone number). Access allowed for SUPER users, ADMIN of the user's org, or the user themselves.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.USER_UPDATED_SUCCESS,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
-          @ApiResponse(responseCode = "400", description = ApiErrorMessages.INVALID_INPUT + " / " + ApiErrorMessages.INVALID_SECONDARY_EMAIL_DOMAIN,
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.USER_UPDATED_SUCCESS, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
+          @ApiResponse(responseCode = "400", description = ApiErrorMessages.INVALID_INPUT + " / " + ApiErrorMessages.INVALID_SECONDARY_EMAIL_DOMAIN, // Use constant
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
@@ -167,7 +196,7 @@ public class UserController {
 
     UserResponse updatedUser = userService.updateUser(userId, updateUserRequest, actorUsername, actorOrgId, actorRoles);
 
-    ApiSuccessResponse<UserResponse> response = ApiSuccessResponse.ok(updatedUser, ApiResponseMessages.USER_UPDATED_SUCCESS);
+    ApiSuccessResponse<UserResponse> response = ApiSuccessResponse.ok(updatedUser, ApiResponseMessages.USER_UPDATED_SUCCESS); // Use constant
     return ResponseEntity.ok(response);
   }
 
@@ -183,8 +212,8 @@ public class UserController {
   @Operation(summary = "Get All Users by Organization",
           description = "Retrieves a paginated list of users for a specific organization. Requires SUPER role or ADMIN role of that organization.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ALL_USERS_RETRIEVED_SUCCESS,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))), // Schema shows Page<UserResponse> structure
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ALL_USERS_RETRIEVED_SUCCESS, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Schema shows Page<UserResponse> structure // Use ApiSuccessResponse
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "403", description = ApiErrorMessages.ACCESS_DENIED,
@@ -213,7 +242,7 @@ public class UserController {
 
     Page<UserResponse> userPage = userService.getAllUsersByOrganization(orgId, actorUsername, actorOrgId, actorRoles, pageable);
 
-    ApiSuccessResponse<Page<UserResponse>> response = ApiSuccessResponse.ok(userPage, ApiResponseMessages.ALL_USERS_RETRIEVED_SUCCESS);
+    ApiSuccessResponse<Page<UserResponse>> response = ApiSuccessResponse.ok(userPage, ApiResponseMessages.ALL_USERS_RETRIEVED_SUCCESS); // Use constant
     return ResponseEntity.ok(response);
   }
 
@@ -228,8 +257,8 @@ public class UserController {
   @Operation(summary = "Delete User",
           description = "Deletes a user account. Requires SUPER role, or ADMIN role of the user's organization (cannot delete other Admins or self). Cannot delete Super Users.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.USER_DELETED_SUCCESS,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.USER_DELETED_SUCCESS, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "403", description = ApiErrorMessages.ACCESS_DENIED + " / " + ApiErrorMessages.OPERATION_NOT_ALLOWED,
@@ -251,7 +280,7 @@ public class UserController {
 
     userService.deleteUser(userId, actorUsername, actorOrgId, actorRoles);
 
-    ApiSuccessResponse<Void> response = ApiSuccessResponse.ok(ApiResponseMessages.USER_DELETED_SUCCESS);
+    ApiSuccessResponse<Void> response = ApiSuccessResponse.ok(ApiResponseMessages.USER_DELETED_SUCCESS); // Use constant
     log.info("User ID '{}' successfully deleted by actor '{}'.", userId, actorUsername);
     return ResponseEntity.ok(response);
   }
@@ -266,8 +295,8 @@ public class UserController {
   @Operation(summary = "Change Own Password",
           description = "Allows the currently authenticated user to change their own password by providing the current password and a new password.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.PASSWORD_UPDATED_SUCCESS,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.PASSWORD_UPDATED_SUCCESS, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "400", description = ApiErrorMessages.PASSWORD_MISMATCH + " or New password is same as old",
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT + " or " + ApiErrorMessages.BAD_CREDENTIALS + " (Invalid current password)",
@@ -284,7 +313,7 @@ public class UserController {
 
     userService.updateUserPassword(updatePasswordRequest, actorUsername);
 
-    ApiSuccessResponse<Void> response = ApiSuccessResponse.ok(ApiResponseMessages.PASSWORD_UPDATED_SUCCESS);
+    ApiSuccessResponse<Void> response = ApiSuccessResponse.ok(ApiResponseMessages.PASSWORD_UPDATED_SUCCESS); // Use constant
     return ResponseEntity.ok(response);
   }
 }

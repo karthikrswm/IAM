@@ -5,25 +5,33 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.iam.audit.AuditorAwareImpl; // To get SYSTEM auditor constant
 import org.example.iam.constant.AuditEventType;
-// No need for RoleType here
+import org.example.iam.constant.RoleType;
+import org.example.iam.entity.Organization;
+import org.example.iam.entity.Role;
 import org.example.iam.entity.User;
+import org.example.iam.repository.RoleRepository;
 import org.example.iam.repository.UserRepository;
 import org.example.iam.repository.VerificationTokenRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional; // Needed for DB operations
+import org.springframework.util.CollectionUtils;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
  * Component containing scheduled tasks related to user account maintenance and status updates.
  * These tasks run periodically based on configured cron expressions to perform actions like:
  * - Unlocking accounts locked due to failed login attempts after a duration.
- * - Marking user credentials (passwords) as expired based on age.
+ * - Sending password expiry warnings.
+ * - Marking user credentials (passwords) as expired based on age and notifying users/admins.
  * - Disabling accounts due to prolonged inactivity.
  * - Cleaning up expired verification/password reset tokens.
  * <p>
@@ -45,9 +53,10 @@ public class UserAccountScheduler {
 
   // --- Dependencies ---
   private final UserRepository userRepository;
+  private final RoleRepository roleRepository;
   private final VerificationTokenRepository tokenRepository;
   private final AuditEventService auditEventService;
-  // private final NotificationService notificationService; // Inject if notifications are needed (e.g., cred expiry warning)
+  private final NotificationService notificationService; // Use interface
 
   // --- Configuration Properties ---
   @Value("${security.account.lock.duration-minutes:15}")
@@ -55,6 +64,9 @@ public class UserAccountScheduler {
 
   @Value("${security.account.credentials.expire-days:90}")
   private long credentialsExpireDays;
+
+  @Value("${security.account.credentials.warn-days:14}")
+  private long credentialsWarnDays;
 
   @Value("${security.account.inactivity.expire-days:180}")
   private long inactivityExpireDays;
@@ -73,14 +85,11 @@ public class UserAccountScheduler {
       return;
     }
 
-    // Calculate the time threshold based on lock duration
-    Instant unlockThreshold = Instant.now().minus(Duration.ofMinutes(lockDurationMinutes));
-    log.debug("[Scheduler - Unlock] Checking for accounts locked on or before: {}", unlockThreshold);
+    Instant now = Instant.now(); // Use consistent time for checks
+    log.debug("[Scheduler - Unlock] Checking for accounts locked on or before: {}", now);
 
     // Find users who are locked and whose lock time is at or before the threshold
-    // Note: The query in UserRepository uses <= now, which might be slightly different if run exactly on the minute.
-    // Adjusting query or threshold logic might be needed for exactness. Using <= now is generally safe.
-    List<User> usersToUnlock = userRepository.findLockedUsersWithExpiredLockTime(Instant.now());
+    List<User> usersToUnlock = userRepository.findLockedUsersWithExpiredLockTime(now);
 
     if (!usersToUnlock.isEmpty()) {
       log.info("[Scheduler - Unlock] Found {} user account(s) eligible for automatic unlock.", usersToUnlock.size());
@@ -99,6 +108,8 @@ public class UserAccountScheduler {
                   SYSTEM_ACTOR, "SUCCESS",
                   "USER", userId.toString(), orgId, // Target user
                   "Lock time expired"); // Details
+          // Optional: Send unlock notification
+          // notificationService.sendAccountUnlockedEmail(user);
         } catch (Exception e) {
           // Log error but continue processing other users
           log.error("[Scheduler - Unlock] Failed to unlock user account '{}' (ID: {}): {}", username, userId, e.getMessage(), e);
@@ -111,12 +122,76 @@ public class UserAccountScheduler {
   }
 
   /**
+   * Scheduled task to send warnings for credentials nearing expiration.
+   * Runs based on the cron expression defined in {@code iam.scheduler.credentials-warn.cron}.
+   * Skips execution if {@code credentialsExpireDays} or {@code credentialsWarnDays} is non-positive.
+   */
+  @Scheduled(cron = "${iam.scheduler.credentials-warn.cron:0 5 1 * * *}") // Default: Daily at 1:05 AM
+  @Transactional(readOnly = true) // Read-only task, no modifications needed
+  public void warnExpiringCredentials() {
+    if (credentialsExpireDays <= 0 || credentialsWarnDays <= 0) {
+      log.trace("[Scheduler - CredWarn] Credential expiration warning check is disabled (expireDays <= 0 or warnDays <= 0).");
+      return;
+    }
+    if (credentialsWarnDays >= credentialsExpireDays) {
+      log.warn("[Scheduler - CredWarn] Warning period ({} days) is greater than or equal to expiry period ({} days). Warnings might not function as expected.", credentialsWarnDays, credentialsExpireDays);
+    }
+
+    Instant now = Instant.now();
+    // Calculate the effective expiry date based on password change + expire days
+    Instant expiryDateThreshold = now.minus(Duration.ofDays(credentialsExpireDays));
+    // Calculate the date when the warning period starts (password change date > this date)
+    Instant warningStartDateThreshold = expiryDateThreshold.plus(Duration.ofDays(credentialsWarnDays));
+
+    log.debug("[Scheduler - CredWarn] Checking for credentials changed between {} (exclusive) and {} (inclusive).",
+            warningStartDateThreshold, expiryDateThreshold);
+
+    // Find users whose passwordChangedDate falls within the warning window
+    List<User> usersToWarn = userRepository.findUsersWithCredentialsExpiringSoon(warningStartDateThreshold, expiryDateThreshold);
+
+    if (!usersToWarn.isEmpty()) {
+      log.info("[Scheduler - CredWarn] Found {} user account(s) with credentials expiring soon.", usersToWarn.size());
+      for (User user : usersToWarn) {
+        try {
+          // Calculate days remaining (approximate) until potential expiry
+          Instant potentialExpiryTime = user.getPasswordChangedDate().plus(credentialsExpireDays, ChronoUnit.DAYS);
+          long daysRemaining = ChronoUnit.DAYS.between(now, potentialExpiryTime);
+          // Ensure daysRemaining is at least 0, round up slightly if needed.
+          daysRemaining = Math.max(0, daysRemaining);
+          if (daysRemaining == 0 && now.isBefore(potentialExpiryTime)) {
+            daysRemaining = 1; // If less than a full day left, show 1 day
+          }
+
+
+          log.info("[Scheduler - CredWarn] Sending password expiry warning to user '{}' (ID: {}). Expires in approx {} days.",
+                  user.getUsername(), user.getId(), daysRemaining);
+
+          // Send warning notification
+          notificationService.sendPasswordExpiryWarningEmail(user, daysRemaining);
+
+          // Optional: Log an audit event for the warning being sent
+          // auditEventService.logEvent(AuditEventType.PASSWORD_EXPIRY_WARNING_SENT, ...)
+
+        } catch (Exception e) {
+          log.error("[Scheduler - CredWarn] Failed to send expiry warning to user '{}' (ID: {}): {}",
+                  user.getUsername(), user.getId(), e.getMessage(), e);
+        }
+      }
+      log.info("[Scheduler - CredWarn] Finished processing {} credential expiration warning(s).", usersToWarn.size());
+    } else {
+      log.debug("[Scheduler - CredWarn] No users found with credentials needing expiration warning.");
+    }
+  }
+
+
+  /**
    * Scheduled task to mark user credentials (passwords) as expired based on their age.
    * Runs based on the cron expression defined in {@code iam.scheduler.credentials-expire.cron}.
    * Skips execution if {@code credentialsExpireDays} is non-positive.
+   * Notifies user and organization admins upon expiration.
    */
   @Scheduled(cron = "${iam.scheduler.credentials-expire.cron:0 0 1 * * *}") // Default: Daily at 1 AM
-  @Transactional
+  @Transactional // Needs transaction for update and admin lookup
   public void expireOldCredentials() {
     if (credentialsExpireDays <= 0) {
       log.trace("[Scheduler - CredExpire] Credential expiration check is disabled (credentialsExpireDays <= 0).");
@@ -125,20 +200,26 @@ public class UserAccountScheduler {
 
     // Calculate the date threshold for expiration
     Instant expirationThresholdDate = Instant.now().minus(Duration.ofDays(credentialsExpireDays));
-    log.debug("[Scheduler - CredExpire] Checking for credentials last changed before: {}", expirationThresholdDate);
+    log.debug("[Scheduler - CredExpire] Checking for credentials last changed on or before: {}", expirationThresholdDate);
 
-    // Find users whose credentials are not expired but password changed before threshold
+    // Find users whose credentials are not expired but password changed on or before threshold
     List<User> usersToExpire = userRepository.findUsersWithExpiringCredentials(expirationThresholdDate);
 
     if (!usersToExpire.isEmpty()) {
       log.info("[Scheduler - CredExpire] Found {} user account(s) with credentials to expire.", usersToExpire.size());
+      // Fetch ADMIN role once, handle if missing
+      Optional<Role> adminRoleOpt = roleRepository.findByRoleType(RoleType.ADMIN);
+      if (adminRoleOpt.isEmpty()){
+        log.error("[Scheduler - CredExpire] Cannot notify admins: ADMIN role not found in database. Skipping admin notifications.");
+      }
+
       for (User user : usersToExpire) {
         UUID userId = user.getId();
         String username = user.getUsername();
         UUID orgId = (user.getOrganization() != null) ? user.getOrganization().getId() : null;
         try {
           // Use repository method to update the status
-          userRepository.updateCredentialsExpiredStatus(userId, false); // Mark as expired
+          userRepository.updateCredentialsExpiredStatus(userId, false); // Mark as expired (sets credentialsNonExpired = false)
           log.info("[Scheduler - CredExpire] Marked credentials as expired for user '{}' (ID: {})", username, userId);
 
           // Log audit event
@@ -148,10 +229,15 @@ public class UserAccountScheduler {
                   "USER", userId.toString(), orgId, // Target user
                   "Password changed date: " + user.getPasswordChangedDate()); // Details
 
-//           Optional: Send notification to user about password expiration
-//           if (notificationService != null) {
-//               notificationService.sendPasswordExpiredNotification(user);
-//           }
+          // Send notification to user about password expiration
+          notificationService.sendPasswordExpiredEmail(user);
+
+          // Send notification to Org Admins
+          if (orgId != null && adminRoleOpt.isPresent()) {
+            findAndNotifyOrgAdminsPasswordExpired(user, adminRoleOpt.get());
+          } else if (orgId == null) {
+            log.warn("[Scheduler - CredExpire] Cannot notify admins for user '{}': User has no organization.", username);
+          } // If admin role missing, error already logged
 
         } catch (Exception e) {
           log.error("[Scheduler - CredExpire] Failed to expire credentials for user '{}' (ID: {}): {}", username, userId, e.getMessage(), e);
@@ -162,6 +248,34 @@ public class UserAccountScheduler {
       log.debug("[Scheduler - CredExpire] No users found with credentials needing expiration.");
     }
   }
+
+  /**
+   * Helper method to find and notify administrators of the expired user's organization.
+   *
+   * @param expiredUser The user whose credentials have expired.
+   * @param adminRole   The ADMIN Role entity.
+   */
+  private void findAndNotifyOrgAdminsPasswordExpired(User expiredUser, Role adminRole) {
+    Organization org = expiredUser.getOrganization();
+    if (org == null) {
+      log.warn("[Scheduler - CredExpire] Cannot notify admins for user '{}': User organization data is missing.", expiredUser.getUsername());
+      return; // Should not happen if FK constraint is valid, but defensive check
+    }
+
+    UUID orgId = org.getId();
+    // Find admins in the same organization
+    List<User> orgAdmins = userRepository.findByOrganizationIdAndRolesContains(orgId, adminRole);
+
+    if (!CollectionUtils.isEmpty(orgAdmins)) {
+      log.info("[Scheduler - CredExpire] Notifying {} admin(s) about expired credentials for user '{}' in org '{}'",
+              orgAdmins.size(), expiredUser.getUsername(), org.getOrgName());
+      notificationService.sendAdminPasswordExpiredNotification(expiredUser, orgAdmins);
+    } else {
+      log.warn("[Scheduler - CredExpire] No ADMIN users found in organization '{}' (ID: {}) to notify about expired credentials for user '{}'.",
+              org.getOrgName(), orgId, expiredUser.getUsername());
+    }
+  }
+
 
   /**
    * Scheduled task to disable user accounts that have been inactive for a configured period.
@@ -189,7 +303,8 @@ public class UserAccountScheduler {
       for (User user : usersToDisable) {
         UUID userId = user.getId();
         String username = user.getUsername();
-        UUID orgId = user.getOrganization().getId(); // Org is non-null due to query filter
+        // Org should not be null due to query filter `u.organization.isSuperOrg = false` implicitly checking for non-null org
+        UUID orgId = user.getOrganization() != null ? user.getOrganization().getId() : null;
         try {
           // Use repository method to disable the user
           userRepository.disableUser(userId); // Sets enabled = false

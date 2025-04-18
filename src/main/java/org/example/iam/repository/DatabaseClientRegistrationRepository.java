@@ -4,11 +4,12 @@ package org.example.iam.repository;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.example.iam.constant.ApiErrorMessages;
 import org.example.iam.entity.Oauth2Config;
 import org.example.iam.entity.Organization; // Import Organization for Org Name logging
 import org.example.iam.exception.ConfigurationException; // Import exception
-// Import EncryptionService if used for client secrets
-// import org.example.iam.service.EncryptionService;
+// Import EncryptionService
+import org.example.iam.service.EncryptionService;
 import org.springframework.security.oauth2.client.registration.ClientRegistration;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
@@ -35,10 +36,9 @@ import java.util.stream.Collectors;
  * provider name and organization ID (e.g., "google-a1b2c3d4...").
  * </p>
  * <p>
- * **Security Note:** Handling of client secrets requires careful implementation. The current
- * placeholder assumes secrets are stored (insecurely) in the Oauth2Config entity. Production systems
- * MUST use a secure mechanism like an external vault or robust encryption/decryption service
- * (e.g., injecting an {@code EncryptionService}).
+ * **Security Note:** Uses the injected {@link EncryptionService} to decrypt the
+ * stored {@code clientSecretEncrypted} field before building the {@link ClientRegistration}.
+ * The encryption key itself MUST be managed securely outside the application code.
  * </p>
  */
 @Repository("databaseClientRegistrationRepository") // Explicit bean name for clarity/injection
@@ -48,8 +48,7 @@ public class DatabaseClientRegistrationRepository implements ClientRegistrationR
         Iterable<ClientRegistration> { // Implement Iterable for discovery
 
   private final Oauth2ConfigRepository oauth2ConfigRepository;
-  // Uncomment and inject if using an encryption service for secrets
-  // private final EncryptionService encryptionService;
+  private final EncryptionService encryptionService;
 
   /**
    * In-memory cache holding the loaded ClientRegistration objects.
@@ -67,8 +66,6 @@ public class DatabaseClientRegistrationRepository implements ClientRegistrationR
   @PostConstruct
   public void loadClientRegistrations() {
     log.info("Loading OAuth2 client registrations from database...");
-    // In a real application, ensure Oauth2ConfigRepository has a findByEnabledTrue() method
-    // or filter the results here. For simplicity, loading all and filtering.
     List<Oauth2Config> enabledConfigs = oauth2ConfigRepository.findAll()
             .stream()
             .filter(config -> config.isEnabled() && config.getOrganization() != null) // Ensure enabled and linked to an Org
@@ -94,12 +91,10 @@ public class DatabaseClientRegistrationRepository implements ClientRegistrationR
           successfullyLoaded++;
         }
       } catch (Exception e) {
-        // Log critical failure for a specific config but continue loading others
         log.error("!!! Failed to build OAuth2 client registration for DB config ID {}. OrgID: {}. Error: {} !!!",
                 config.getId(),
                 config.getOrganization() != null ? config.getOrganization().getId() : "N/A",
                 e.getMessage(), e);
-        // Depending on policy, might want to throw exception here to halt startup if any config fails
       }
     }
     log.info("Finished loading OAuth2 configurations. Successfully loaded {} registration(s).", successfullyLoaded);
@@ -135,66 +130,68 @@ public class DatabaseClientRegistrationRepository implements ClientRegistrationR
 
   /**
    * Helper method to construct a Spring Security {@link ClientRegistration} object
-   * from the application's {@link Oauth2Config} entity.
+   * from the application's {@link Oauth2Config} entity. Decrypts the client secret.
    *
    * @param config The {@link Oauth2Config} entity from the database.
    * @return A configured {@link ClientRegistration} object, or null if construction fails.
-   * @throws ConfigurationException if essential configuration is missing or invalid.
+   * @throws ConfigurationException if essential configuration is missing or invalid, or decryption fails.
    */
   private ClientRegistration buildClientRegistration(Oauth2Config config) {
     log.debug("Building ClientRegistration for Oauth2Config ID: {}", config.getId());
 
-    // Ensure organization link exists (should be caught by filter in loadClientRegistrations, but double-check)
     if (config.getOrganization() == null) {
-      log.error("Cannot build ClientRegistration: Oauth2Config ID {} is not linked to an Organization.", config.getId());
-      return null; // Or throw ConfigurationException
+      String errorMsg = String.format("Oauth2Config ID %s is not linked to an Organization.", config.getId());
+      log.error(errorMsg);
+      throw new ConfigurationException(ApiErrorMessages.CONFIGURATION_ERROR + " (" + errorMsg + ")");
     }
     Organization org = config.getOrganization();
 
     // 1. Generate the unique registrationId for Spring Security
     String registrationId = generateRegistrationId(config.getProvider(), org.getId());
 
-    // 2. Handle Client Secret (Placeholder for secure retrieval/decryption)
-    String clientSecret = config.getClientSecret(); // *** INSECURE PLACEHOLDER ***
-    // --- Example Secure Handling ---
-    // if (encryptionService != null && StringUtils.hasText(config.getEncryptedClientSecret())) {
-    //     try {
-    //         clientSecret = encryptionService.decrypt(config.getEncryptedClientSecret());
-    //     } catch (Exception e) {
-    //         log.error("FATAL: Failed to decrypt client secret for OAuth2 config ID {}. Registration cannot be built.", config.getId(), e);
-    //         throw new ConfigurationException("Failed to decrypt client secret for OAuth2 config " + config.getId(), e);
-    //     }
-    // } else
-    if (!StringUtils.hasText(clientSecret)) {
-      log.error("FATAL: Client secret is missing for OAuth2 config ID {}. Registration cannot be built.", config.getId());
-      throw new ConfigurationException("Client secret is required for OAuth2 config " + config.getId());
+    // 2. Handle Client Secret (Decrypt stored secret)
+    String clientSecret;
+    // *** Verify this getter call matches the field name 'clientSecretEncrypted' in Oauth2Config ***
+    String encryptedSecret = config.getClientSecretEncrypted(); // <<< THE PROBLEMATIC LINE?
+
+    if (!StringUtils.hasText(encryptedSecret)) {
+      String errorMsg = String.format("Encrypted client secret is missing for OAuth2 config ID %s. Registration cannot be built.", config.getId());
+      log.error("FATAL: {}", errorMsg);
+      throw new ConfigurationException(ApiErrorMessages.CONFIGURATION_ERROR + " (" + errorMsg + ")");
     }
+
+    try {
+      // Decrypt the secret using the injected service
+      clientSecret = encryptionService.decrypt(encryptedSecret);
+      if (!StringUtils.hasText(clientSecret)) {
+        throw new ConfigurationException("Decrypted client secret is empty for config ID " + config.getId());
+      }
+      log.trace("Successfully decrypted client secret for config ID {}", config.getId());
+    } catch (Exception e) {
+      String errorMsg = String.format("Failed to decrypt client secret for OAuth2 config ID %s", config.getId());
+      log.error("FATAL: {}. Check application encryption key and ciphertext validity.", errorMsg, e);
+      throw new ConfigurationException(ApiErrorMessages.CONFIGURATION_ERROR + " (" + errorMsg + ")", e);
+    }
+
 
     // 3. Use ClientRegistration builder
     ClientRegistration.Builder builder = ClientRegistration.withRegistrationId(registrationId)
             .clientId(config.getClientId())
-            .clientSecret(clientSecret) // Use the potentially decrypted secret
-            // Common settings - can be made configurable in Oauth2Config if needed
+            .clientSecret(clientSecret) // Use the DECRYPTED secret
             .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
             .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
-            // The redirect URI template Spring Security will use - must match provider config
             .redirectUri(StringUtils.hasText(config.getRedirectUriTemplate())
                     ? config.getRedirectUriTemplate()
                     : "{baseUrl}/login/oauth2/code/{registrationId}") // Default pattern
-            // Provider details - URIs might be auto-discovered for common providers by Spring Boot,
-            // but providing them from DB ensures consistency, especially for custom providers.
             .authorizationUri(config.getAuthorizationUri())
             .tokenUri(config.getTokenUri())
             .userInfoUri(config.getUserInfoUri())
             .jwkSetUri(config.getJwkSetUri())
-            // Parse scopes from comma-separated string in DB config
             .scope(parseScopes(config.getScopes()))
-            // Attribute name used to extract the principal's name (subject)
             .userNameAttributeName(StringUtils.hasText(config.getUserNameAttributeName())
                     ? config.getUserNameAttributeName()
-                    : IdTokenClaimNames.SUB) // Default to 'sub' for OIDC
-            // Client name displayed to the user (optional but good practice)
-            .clientName(config.getProvider() + " (" + org.getOrgName() + ")"); // e.g., "Google (Example Corp)"
+                    : IdTokenClaimNames.SUB)
+            .clientName(config.getProvider() + " (" + org.getOrgName() + ")");
 
 
     log.debug("Successfully built ClientRegistration for registrationId: {}", registrationId);

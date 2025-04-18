@@ -1,7 +1,6 @@
 // File: src/main/java/org/example/iam/service/UserService.java
 package org.example.iam.service;
 
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.iam.constant.ApiErrorMessages;
 import org.example.iam.constant.AuditEventType;
@@ -17,11 +16,13 @@ import org.example.iam.exception.*;
 import org.example.iam.repository.OrganizationRepository;
 import org.example.iam.repository.RoleRepository;
 import org.example.iam.repository.UserRepository;
+import org.example.iam.security.SecurityUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy; // Import Lazy
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.AccessDeniedException; // Use Spring's exception
+import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException;
 import org.springframework.security.authentication.BadCredentialsException; // Specific exception for password mismatch
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -32,7 +33,6 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Service layer containing business logic related to User account management.
@@ -40,7 +40,7 @@ import java.util.stream.Collectors;
  * Just-In-Time (JIT) provisioning for SSO, and interaction with dependent services like auditing and notifications.
  */
 @Service
-//@RequiredArgsConstructor // Lombok constructor injection
+//@RequiredArgsConstructor // Manual constructor needed due to @Lazy injection cycle
 @Slf4j
 public class UserService {
 
@@ -70,12 +70,13 @@ public class UserService {
   @Value("${security.account.lock.duration-minutes:15}")
   private long lockDurationMinutes;
 
+  // Constructor injection with @Lazy to break cycles
   public UserService(UserRepository userRepository,
                      OrganizationRepository organizationRepository,
                      RoleRepository roleRepository,
-                     @Lazy PasswordEncoder passwordEncoder, // <<< Add @Lazy here
+                     @Lazy PasswordEncoder passwordEncoder, // Lazy inject PasswordEncoder if needed by AuthService
                      AuditEventService auditEventService,
-                     @Lazy AuthService authService, // Keep this lazy too
+                     @Lazy AuthService authService, // Lazy inject AuthService
                      NotificationService notificationService
           /* Add other final fields here */ ) {
     this.userRepository = userRepository;
@@ -124,9 +125,9 @@ public class UserService {
     // 4. Fetch Required Role
     Role userRole = roleRepository.findByRoleType(request.getRoleType())
             .orElseThrow(() -> {
+              String roleErrorMsg = String.format(ApiErrorMessages.ROLE_NOT_FOUND, request.getRoleType()); // Use constant
               log.error("Configuration Error: Role '{}' not found in database.", request.getRoleType());
-              // This is an internal configuration issue, hence ConfigurationException
-              return new ConfigurationException("Required role " + request.getRoleType() + " is not configured in the system.");
+              return new ConfigurationException(roleErrorMsg); // Use constant message
             });
 
     // 5. Generate & Encode Temporary Password
@@ -174,6 +175,29 @@ public class UserService {
   }
 
   /**
+   * Retrieves the UserResponse DTO for the currently authenticated user.
+   * Ensures necessary associations are loaded within a transaction.
+   *
+   * @return UserResponse DTO for the current user.
+   * @throws ResourceNotFoundException if the authenticated user cannot be found in the repository.
+   */
+  @Transactional(readOnly = true) // <<< ADDED Transactional annotation
+  public UserResponse getCurrentUserDto() {
+    // Get username from security context
+    String username = SecurityUtils.getCurrentUsername()
+            .orElseThrow(() -> new AuthenticationCredentialsNotFoundException("Cannot find current username in security context."));
+
+    // Fetch the user entity *within this transaction* to ensure associations can be loaded
+    User user = userRepository.findByUsernameIgnoreCase(username)
+            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.USER_NOT_FOUND_USERNAME, username)));
+
+    // Now map to DTO. Accessing user.getOrganization().getOrgName() here is safe
+    // because the Hibernate session is still active.
+    log.info("Fetched current user '{}' within transaction for DTO mapping.", username);
+    return UserResponse.fromEntity(user);
+  }
+
+  /**
    * Retrieves a user's details by their UUID.
    * Performs authorization check: SUPER user, ADMIN of the target user's org, or the user themselves.
    *
@@ -190,7 +214,7 @@ public class UserService {
     log.debug("Actor '{}' attempting to retrieve user ID '{}'", actor, userId);
 
     User user = userRepository.findById(userId)
-            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.USER_NOT_FOUND_ID, userId)));
+            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.USER_NOT_FOUND_ID, userId))); // Use constant
 
     // Perform authorization check
     authorizeUserAccess(actor, actorOrgId, actorRoles, user, "view");
@@ -219,7 +243,7 @@ public class UserService {
     log.info("Actor '{}' attempting to update profile for user ID '{}'", actor, userId);
 
     User existingUser = userRepository.findById(userId)
-            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.USER_NOT_FOUND_ID, userId)));
+            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.USER_NOT_FOUND_ID, userId))); // Use constant
 
     // Perform authorization check
     authorizeUserAccess(actor, actorOrgId, actorRoles, existingUser, "update");
@@ -297,12 +321,12 @@ public class UserService {
     if (!isSuper && !isAdminOfTargetOrg) {
       log.warn("Authorization failed: Actor '{}' (Org: {}, Roles: {}) cannot list users for Org ID '{}'.",
               actor, actorOrgId, actorRoles, organizationId);
-      throw new AccessDeniedException("User requires SUPER role or ADMIN role of the target organization to list users.");
+      throw new AccessDeniedException(ApiErrorMessages.ACCESS_DENIED); // Use constant
     }
 
     // Check if organization exists before querying users
     if (!organizationRepository.existsById(organizationId)) {
-      throw new ResourceNotFoundException(String.format(ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID, organizationId));
+      throw new ResourceNotFoundException(String.format(ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID, organizationId)); // Use constant
     }
 
     Page<User> userPage = userRepository.findByOrganizationId(organizationId, pageable);
@@ -331,7 +355,7 @@ public class UserService {
     log.warn("Actor '{}' attempting DESTRUCTIVE delete operation for user ID: {}", actor, userId);
 
     User userToDelete = userRepository.findById(userId)
-            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.USER_NOT_FOUND_ID, userId)));
+            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.USER_NOT_FOUND_ID, userId))); // Use constant
 
     String targetUsername = userToDelete.getUsername();
     UUID targetOrgId = (userToDelete.getOrganization() != null) ? userToDelete.getOrganization().getId() : null;
@@ -340,12 +364,12 @@ public class UserService {
     // 1. Cannot delete self
     if (targetUsername.equalsIgnoreCase(actor)) {
       log.warn("Delete failed: Actor '{}' attempted to delete self (ID: {})", actor, userId);
-      throw new OperationNotAllowedException(ApiErrorMessages.CANNOT_DELETE_SELF);
+      throw new OperationNotAllowedException(ApiErrorMessages.CANNOT_DELETE_SELF); // Use constant
     }
     // 2. Cannot delete SUPER users via API
     if (userToDelete.hasRole(RoleType.SUPER.getRoleName())) {
       log.warn("Delete failed: Actor '{}' attempted to delete SUPER user '{}' (ID: {})", actor, targetUsername, userId);
-      throw new OperationNotAllowedException(ApiErrorMessages.CANNOT_DELETE_SUPER_USER);
+      throw new OperationNotAllowedException(ApiErrorMessages.CANNOT_DELETE_SUPER_USER); // Use constant
     }
 
     // 3. Authorization based on actor's role and target user's role/org
@@ -364,7 +388,7 @@ public class UserService {
       String reason = isActorAdminOfTargetOrg ? "Admin cannot delete another Admin." : "Insufficient permissions.";
       log.warn("Authorization failed: Actor '{}' (Org: {}, Roles: {}) cannot delete user '{}' (ID: {}, Org: {}, IsAdmin: {}). Reason: {}",
               actor, actorOrgId, actorRoles, targetUsername, userId, targetOrgId, isTargetAdmin, reason);
-      throw new AccessDeniedException("User does not have permission to delete this user account.");
+      throw new AccessDeniedException(ApiErrorMessages.ACCESS_DENIED); // Use constant
     }
     // --- End Checks ---
 
@@ -407,7 +431,7 @@ public class UserService {
             .orElseThrow(() -> {
               // This should technically not happen if the user is authenticated
               log.error("CRITICAL: Authenticated user '{}' not found in repository during password update.", actorUsername);
-              return new ResourceNotFoundException(String.format(ApiErrorMessages.USER_NOT_FOUND_USERNAME, actorUsername));
+              return new ResourceNotFoundException(String.format(ApiErrorMessages.USER_NOT_FOUND_USERNAME, actorUsername)); // Use constant
             });
 
     UUID userId = user.getId();
@@ -421,10 +445,10 @@ public class UserService {
               String.format("User '%s' password update failed", actorUsername), actorUsername,
               "USER_CREDENTIALS", userId.toString(), userOrgId,
               ApiErrorMessages.BAD_CREDENTIALS + " (Incorrect current password)");
-      throw new BadCredentialsException(ApiErrorMessages.BAD_CREDENTIALS); // Use specific exception for incorrect current password
+      throw new BadCredentialsException(ApiErrorMessages.BAD_CREDENTIALS); // Use constant
     }
 
-    // 2. Check New Password Confirmation (Handled by @AssertTrue on DTO)
+    // 2. Check New Password Confirmation (Handled by @AssertTrue on DTO using PASSWORD_MISMATCH constant)
 
     // 3. Check if New Password is the Same as Old
     if (passwordEncoder.matches(request.getNewPassword(), user.getPassword())) {
@@ -433,12 +457,14 @@ public class UserService {
               String.format("User '%s' password update failed", actorUsername), actorUsername,
               "USER_CREDENTIALS", userId.toString(), userOrgId,
               "New password same as old");
-      throw new BadRequestException("New password cannot be the same as the current password.");
+      throw new BadRequestException("New password cannot be the same as the current password."); // Specific message, maybe constant needed?
     }
+
+    // TODO: Add check against password history if implemented
 
     // 4. Encode and Update Password (and related flags)
     String newEncodedPassword = passwordEncoder.encode(request.getNewPassword());
-    updatePasswordAndFlags(userId, newEncodedPassword); // Use helper method
+    updatePasswordAndFlags(userId, newEncodedPassword, actorUsername); // Pass actor for audit // <<< MODIFIED call
 
     // 5. Log Audit Success (handled within updatePasswordAndFlags)
 
@@ -483,7 +509,7 @@ public class UserService {
       if (!Objects.equals(user.getOrganization().getId(), organization.getId())) {
         log.error("OAuth2 JIT Error: Email '{}' found but belongs to Org ID '{}', expected Org ID '{}'. Potential misconfiguration or attack.",
                 processedEmail, user.getOrganization().getId(), organization.getId());
-        throw new BadRequestException("User account email belongs to a different organization.");
+        throw new BadRequestException("User account email belongs to a different organization."); // Specific error message needed?
       }
 
       // Handle login success actions (update last login, reset locks)
@@ -518,8 +544,9 @@ public class UserService {
       // Fetch the default USER role
       Role userRole = roleRepository.findByRoleType(RoleType.USER)
               .orElseThrow(() -> {
+                String roleErrorMsg = String.format(ApiErrorMessages.ROLE_NOT_FOUND, RoleType.USER); // Use constant
                 log.error("Configuration Error: Default 'USER' role not found in database for JIT provisioning.");
-                return new ConfigurationException("Default USER role not configured in the system.");
+                return new ConfigurationException(roleErrorMsg); // Use constant message
               });
 
       // Build the new user entity
@@ -592,7 +619,7 @@ public class UserService {
       if (!Objects.equals(user.getOrganization().getId(), organization.getId())) {
         log.error("SAML JIT Error: Email '{}' found but belongs to Org ID '{}', expected Org ID '{}'. Potential misconfiguration or attack.",
                 processedEmail, user.getOrganization().getId(), organization.getId());
-        throw new BadRequestException("User account email belongs to a different organization.");
+        throw new BadRequestException("User account email belongs to a different organization."); // Use constant/specific msg?
       }
 
       handleSuccessfulLogin(user.getId()); // Update last login, reset locks
@@ -619,7 +646,11 @@ public class UserService {
       String randomPassword = generateTemporaryPassword();
       String encodedPassword = passwordEncoder.encode(randomPassword);
       Role userRole = roleRepository.findByRoleType(RoleType.USER)
-              .orElseThrow(() -> new ConfigurationException("Default USER role not configured in the system."));
+              .orElseThrow(() -> {
+                String roleErrorMsg = String.format(ApiErrorMessages.ROLE_NOT_FOUND, RoleType.USER); // Use constant
+                log.error("Configuration Error: Default 'USER' role not found in database for SAML JIT provisioning.");
+                return new ConfigurationException(roleErrorMsg); // Use constant message
+              });
 
       User newUser = User.builder()
               .username(uniqueUsername)
@@ -770,12 +801,12 @@ public class UserService {
   public void enableAccount(UUID userId) {
     log.info("Attempting to enable account for user ID: {}", userId);
     User user = userRepository.findById(userId)
-            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.USER_NOT_FOUND_ID, userId)));
+            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.USER_NOT_FOUND_ID, userId))); // Use constant
 
     if (user.isEnabled()) {
       log.warn("Account enable requested for already enabled user '{}' (ID: {}). No change made.", user.getUsername(), userId);
-      // Optionally log audit event for the attempt? Maybe not necessary.
-      return; // No action needed
+      // Throw exception as the state doesn't allow this action
+      throw new OperationNotAllowedException(ApiErrorMessages.USER_ALREADY_ENABLED); // Use Constant
     }
 
     user.setEnabled(true);
@@ -801,9 +832,10 @@ public class UserService {
    *
    * @param userId             UUID of the user whose password is being changed.
    * @param newEncodedPassword The new, securely encoded password hash.
+   * @param actorUsername      The username of the actor performing the change (user themselves or admin). // <<< ADDED Param
    */
   @Transactional // Ensure flags and password update atomically
-  public void updatePasswordAndFlags(UUID userId, String newEncodedPassword) {
+  public void updatePasswordAndFlags(UUID userId, String newEncodedPassword, String actorUsername) { // <<< MODIFIED Signature
     log.debug("Updating password and flags for user ID: {}", userId);
     User user = userRepository.findById(userId)
             .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.USER_NOT_FOUND_ID, userId))); // Should generally exist if called from reset/update flow
@@ -817,7 +849,7 @@ public class UserService {
     auditEventService.logEvent(
             AuditEventType.PASSWORD_UPDATED, // More specific than RESET_SUCCESS if user initiated change
             String.format("Password changed for user '%s'", user.getUsername()),
-            user.getUsername(), // Actor is the user themselves (or system if admin reset) - TODO: differentiate?
+            actorUsername, // Use the provided actor <<< MODIFIED Audit Log
             "SUCCESS",
             "USER_CREDENTIALS", userId.toString(),
             user.getOrganization() != null ? user.getOrganization().getId() : null,
@@ -842,7 +874,7 @@ public class UserService {
     // Rule 1: Cannot assign SUPER role via API
     if (requestedRole == RoleType.SUPER) {
       log.warn("AuthZ failed: Actor '{}' attempted to assign SUPER role.", actor);
-      throw new OperationNotAllowedException(ApiErrorMessages.INVALID_ROLE_ASSIGNMENT + " Cannot assign SUPER role.");
+      throw new OperationNotAllowedException(ApiErrorMessages.INVALID_ROLE_ASSIGNMENT + " Cannot assign SUPER role."); // Use constant
     }
 
     // Rule 2: Only SUPER users can create users in the Super Organization
@@ -855,7 +887,7 @@ public class UserService {
     if (!isActorSuper) {
       if (!isActorAdmin) {
         log.warn("AuthZ failed: Actor '{}' is not ADMIN or SUPER.", actor);
-        throw new AccessDeniedException("User requires ADMIN or SUPER role to create users.");
+        throw new AccessDeniedException(ApiErrorMessages.ACCESS_DENIED); // Use constant
       }
       // Actor is ADMIN, check if they belong to the target organization
       if (!Objects.equals(targetOrg.getId(), actorOrgId)) {
@@ -876,13 +908,13 @@ public class UserService {
     // Check Username uniqueness
     if (userRepository.existsByUsernameIgnoreCase(request.getUsername().trim())) {
       log.warn("Validation failed: Username '{}' already exists.", request.getUsername());
-      throw new ConflictException(String.format(ApiErrorMessages.USERNAME_ALREADY_EXISTS, request.getUsername()));
+      throw new ConflictException(String.format(ApiErrorMessages.USERNAME_ALREADY_EXISTS, request.getUsername())); // Use constant
     }
     // Check Primary Email uniqueness
     String primaryEmailLower = request.getPrimaryEmail().toLowerCase().trim();
     if (userRepository.existsByPrimaryEmailIgnoreCase(primaryEmailLower)) {
       log.warn("Validation failed: Primary email '{}' already exists.", request.getPrimaryEmail());
-      throw new ConflictException(String.format(ApiErrorMessages.EMAIL_ALREADY_EXISTS, request.getPrimaryEmail()));
+      throw new ConflictException(String.format(ApiErrorMessages.EMAIL_ALREADY_EXISTS, request.getPrimaryEmail())); // Use constant
     }
     // Validate Primary Email Domain
     validateEmailDomain(primaryEmailLower, targetOrg.getOrgDomain());
@@ -901,7 +933,7 @@ public class UserService {
     String emailDomain = getDomainFromEmail(email);
     if (emailDomain == null || !expectedDomain.equalsIgnoreCase(emailDomain)) {
       log.warn("Validation failed: Email domain '{}' does not match expected organization domain '{}'.", emailDomain, expectedDomain);
-      throw new BadRequestException(String.format(ApiErrorMessages.INVALID_EMAIL_DOMAIN, expectedDomain));
+      throw new BadRequestException(String.format(ApiErrorMessages.INVALID_EMAIL_DOMAIN, expectedDomain)); // Use constant
     }
     log.trace("Primary email domain validation passed for email '{}' against domain '{}'", email, expectedDomain);
   }
@@ -914,13 +946,13 @@ public class UserService {
     if (domain == null) {
       // Should be caught by @Email validation on DTO, but double-check
       log.warn("Validation failed: Invalid secondary email format '{}'.", secondaryEmail);
-      throw new BadRequestException("Invalid secondary email format provided.");
+      throw new BadRequestException(ApiErrorMessages.INVALID_INPUT); // Use generic input constant? Or specific format message?
     }
     // Check if any *other* organization exists with this domain
     organizationRepository.findByOrgDomainIgnoreCase(domain).ifPresent(conflictingOrg -> {
       if (!Objects.equals(conflictingOrg.getId(), primaryOrgId)) {
         log.warn("Validation failed: Secondary email domain '{}' belongs to another organization (ID: {}).", domain, conflictingOrg.getId());
-        throw new ConflictException(String.format(ApiErrorMessages.INVALID_SECONDARY_EMAIL_DOMAIN, domain));
+        throw new ConflictException(String.format(ApiErrorMessages.INVALID_SECONDARY_EMAIL_DOMAIN, domain)); // Use constant
       }
       log.trace("Secondary email domain '{}' matches primary org domain or is not registered to another org.", domain);
     });
@@ -1062,7 +1094,7 @@ public class UserService {
     // If none of the above conditions met, deny access
     log.warn("Authorization failed: Actor '{}' (Org: {}, Roles: {}) cannot {} user '{}' (Org: {}).",
             actorUsername, actorOrgId, actorRoles, action, targetUser.getUsername(), targetUserOrgId);
-    throw new AccessDeniedException("User does not have permission to " + action + " this user's profile.");
+    throw new AccessDeniedException(ApiErrorMessages.ACCESS_DENIED); // Use constant
   }
 
 } // End of UserService class

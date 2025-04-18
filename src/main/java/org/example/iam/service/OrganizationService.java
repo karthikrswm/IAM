@@ -4,6 +4,7 @@ package org.example.iam.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.iam.constant.ApiErrorMessages;
+import org.example.iam.constant.ApiResponseMessages; // Added import
 import org.example.iam.constant.AuditEventType;
 import org.example.iam.constant.RoleType;
 import org.example.iam.dto.CreateOrgRequest;
@@ -48,7 +49,7 @@ public class OrganizationService {
    * @param request DTO containing organization details.
    * @param actor   Username of the SUPER user performing the action.
    * @return OrgResponse DTO of the newly created organization.
-   * @throws ConflictException     if name or domain already exists.
+   * @throws ConflictException      if name or domain already exists.
    * @throws AccessDeniedException if the actor is not a SUPER user (should be caught by @PreAuthorize ideally).
    */
   @Transactional
@@ -60,7 +61,7 @@ public class OrganizationService {
     // This check assumes SecurityUtils works correctly or role is passed if needed
     // if (!SecurityUtils.hasRole(RoleType.SUPER)) {
     //     log.warn("Authorization failed: Actor '{}' attempting to create organization without SUPER role.", actor);
-    //     throw new AccessDeniedException("Only Super Users can create organizations.");
+    //     throw new AccessDeniedException(ApiErrorMessages.ACCESS_DENIED); // Use constant
     // }
 
     // Validate input and check for conflicts
@@ -69,11 +70,11 @@ public class OrganizationService {
 
     if (organizationRepository.existsByOrgNameIgnoreCase(orgName)) {
       log.warn("Organization creation failed: Name '{}' already exists.", orgName);
-      throw new ConflictException(String.format(ApiErrorMessages.ORG_NAME_ALREADY_EXISTS, orgName));
+      throw new ConflictException(String.format(ApiErrorMessages.ORG_NAME_ALREADY_EXISTS, orgName)); // Use constant
     }
     if (organizationRepository.existsByOrgDomainIgnoreCase(orgDomain)) {
       log.warn("Organization creation failed: Domain '{}' already exists.", orgDomain);
-      throw new ConflictException(String.format(ApiErrorMessages.ORG_DOMAIN_ALREADY_EXISTS, orgDomain));
+      throw new ConflictException(String.format(ApiErrorMessages.ORG_DOMAIN_ALREADY_EXISTS, orgDomain)); // Use constant
     }
 
     // Create and save the new organization
@@ -140,8 +141,8 @@ public class OrganizationService {
 
     // Authorization check (redundant if controller uses @PreAuthorize)
     // if (!SecurityUtils.hasRole(RoleType.SUPER)) { // Assuming SecurityUtils works
-    //    log.warn("Authorization failed: Actor '{}' attempting to get all organizations without SUPER role.", actor);
-    //    throw new AccessDeniedException("Only Super Users can retrieve all organizations.");
+    //     log.warn("Authorization failed: Actor '{}' attempting to get all organizations without SUPER role.", actor);
+    //     throw new AccessDeniedException(ApiErrorMessages.ACCESS_DENIED); // Use constant
     // }
 
     List<Organization> orgs = organizationRepository.findAll();
@@ -176,7 +177,7 @@ public class OrganizationService {
     // Business rule: Cannot modify the Super Organization
     if (existingOrg.isSuperOrg()) {
       log.warn("Update failed: Actor '{}' attempted to modify the Super Organization (ID: {})", actor, orgId);
-      throw new OperationNotAllowedException(ApiErrorMessages.CANNOT_MODIFY_SUPER_ORG);
+      throw new OperationNotAllowedException(ApiErrorMessages.CANNOT_MODIFY_SUPER_ORG); // Use constant
     }
 
     boolean changed = false;
@@ -188,7 +189,7 @@ public class OrganizationService {
       // Check for name conflict before updating
       if (organizationRepository.existsByOrgNameIgnoreCase(newOrgName)) {
         log.warn("Organization update failed: Name '{}' already exists.", newOrgName);
-        throw new ConflictException(String.format(ApiErrorMessages.ORG_NAME_ALREADY_EXISTS, newOrgName));
+        throw new ConflictException(String.format(ApiErrorMessages.ORG_NAME_ALREADY_EXISTS, newOrgName)); // Use constant
       }
       log.debug("Updating Org ID '{}' name from '{}' to '{}'", orgId, existingOrg.getOrgName(), newOrgName);
       changesDetail.append(String.format("Name changed from '%s' to '%s'; ", existingOrg.getOrgName(), newOrgName));
@@ -200,7 +201,8 @@ public class OrganizationService {
     if (request.getLoginType() != null && !Objects.equals(request.getLoginType(), existingOrg.getLoginType())) {
       // Prevent changing login type for Super Org (already checked above, but good defense)
       if(existingOrg.isSuperOrg()){
-        throw new OperationNotAllowedException(ApiErrorMessages.CANNOT_MODIFY_SUPER_ORG_LOGIN);
+        // This case should not be reachable due to the earlier check, but defensive coding is good.
+        throw new OperationNotAllowedException(ApiErrorMessages.CANNOT_MODIFY_SUPER_ORG_LOGIN); // Use constant
       }
       log.debug("Updating Org ID '{}' login type from '{}' to '{}'", orgId, existingOrg.getLoginType(), request.getLoginType());
       changesDetail.append(String.format("LoginType changed from '%s' to '%s'; ", existingOrg.getLoginType(), request.getLoginType()));
@@ -250,16 +252,16 @@ public class OrganizationService {
     // Authorization check (Redundant if controller uses @PreAuthorize)
     // if (!SecurityUtils.hasRole(RoleType.SUPER)) {
     //     log.warn("Authorization failed: Actor '{}' attempting delete without SUPER role.", actor);
-    //     throw new AccessDeniedException("Only Super Users can delete organizations.");
+    //     throw new AccessDeniedException(ApiErrorMessages.ACCESS_DENIED); // Use constant
     // }
 
     Organization orgToDelete = organizationRepository.findById(orgId)
-            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID, orgId)));
+            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID, orgId))); // Use constant
 
     // Business Rule: Cannot delete the Super Organization
     if (orgToDelete.isSuperOrg()) {
       log.warn("Delete failed: Actor '{}' attempted to delete the Super Organization (ID: {})", actor, orgId);
-      throw new OperationNotAllowedException(ApiErrorMessages.CANNOT_DELETE_SUPER_ORG);
+      throw new OperationNotAllowedException(ApiErrorMessages.CANNOT_DELETE_SUPER_ORG); // Use constant
     }
 
     String orgName = orgToDelete.getOrgName(); // Capture name before deletion for logging
@@ -291,12 +293,12 @@ public class OrganizationService {
    */
   private Organization findAndAuthorizeOrgAccess(UUID targetOrgId, String actor, UUID actorOrgId, Set<RoleType> actorRoles) {
     Organization org = organizationRepository.findById(targetOrgId)
-            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID, targetOrgId)));
+            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID, targetOrgId))); // Use constant
     boolean isSuper = actorRoles.contains(RoleType.SUPER);
     boolean isMemberOfOrg = Objects.equals(targetOrgId, actorOrgId);
     if (!isSuper && !isMemberOfOrg) {
       log.warn("Authorization failed: Actor '{}' (Org: {}) cannot access Org ID '{}'. Requires SUPER role or membership.", actor, actorOrgId, targetOrgId);
-      throw new AccessDeniedException("User does not have permission to access this organization.");
+      throw new AccessDeniedException(ApiErrorMessages.ACCESS_DENIED); // Use constant
     }
     return org;
   }
@@ -307,12 +309,12 @@ public class OrganizationService {
    */
   private Organization findAndAuthorizeOrgAdminOrSuperAccess(UUID targetOrgId, String actor, UUID actorOrgId, Set<RoleType> actorRoles) {
     Organization org = organizationRepository.findById(targetOrgId)
-            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID, targetOrgId)));
+            .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID, targetOrgId))); // Use constant
     boolean isSuper = actorRoles.contains(RoleType.SUPER);
     boolean isAdminOfThisOrg = actorRoles.contains(RoleType.ADMIN) && Objects.equals(targetOrgId, actorOrgId);
     if (!isSuper && !isAdminOfThisOrg) {
       log.warn("Authorization failed: Actor '{}' (Org: {}, Roles: {}) cannot modify Org ID '{}'. Requires SUPER role or ADMIN of the target organization.", actor, actorOrgId, actorRoles, targetOrgId);
-      throw new AccessDeniedException("User must be a Super User or an Admin of this organization to modify it.");
+      throw new AccessDeniedException(ApiErrorMessages.ACCESS_DENIED); // Use constant
     }
     return org;
   }

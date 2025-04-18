@@ -7,6 +7,7 @@ import org.example.iam.audit.Auditable; // Base class for audit fields
 import org.hibernate.annotations.GenericGenerator;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
+import org.springframework.util.StringUtils; // Added for toString helper
 
 import java.util.UUID;
 
@@ -27,6 +28,7 @@ import java.util.UUID;
  * (like {@code serviceProviderSigningCertificate}) should **not** store sensitive material
  * directly in plain text in production. Use a secure vault or encryption mechanism and store
  * only references or encrypted values. These fields currently act as placeholders.
+ * Keystore file paths MUST be secured. Keystore passwords stored MUST be encrypted.
  * </p>
  */
 @Entity
@@ -116,41 +118,64 @@ public class SamlConfig extends Auditable<String> { // Audited by String (userna
   @Builder.Default
   private boolean wantAssertionsSigned = true;
 
-  // --- Certificates/Keys (Placeholders - Implement Secure Storage) ---
+  // --- Certificates/Keys (PKCS12 Keystore Reference) ---
 
   /**
-   * Placeholder for the Service Provider's signing certificate (public key) in PEM format.
-   * Used by the IdP to verify signatures on AuthnRequests if signRequests is true.
-   * **WARNING:** Store securely (e.g., in vault), not plain text.
+   * Filesystem path or other reference to the PKCS#12 keystore containing the SP signing key/cert.
+   * **WARNING:** Ensure path is secured and validated.
    */
-  @Lob
-  @Column(name = "sp_signing_certificate", columnDefinition = "TEXT")
-  @JdbcTypeCode(SqlTypes.LONGVARCHAR)
-  @ToString.Exclude // Exclude potentially large/sensitive data
-  private String serviceProviderSigningCertificate; // Placeholder
+  @Column(name = "sp_signing_keystore_path", length = 255, nullable = true)
+  @ToString.Exclude
+  private String spSigningKeystorePath;
 
   /**
-   * Placeholder for the Service Provider's decryption key certificate (public key) in PEM format.
-   * Used by the IdP to encrypt assertions sent to this SP. Requires corresponding private key for decryption.
-   * **WARNING:** Store securely.
+   * ENCRYPTED password for the SP signing keystore.
+   * **WARNING:** MUST be encrypted using EncryptionService.
+   */
+  @Column(name = "sp_signing_keystore_password_encrypted", length = 512, nullable = true)
+  @ToString.Exclude
+  private String spSigningKeystorePasswordEncrypted;
+
+  /**
+   * Alias of the signing key/cert entry within the SP signing keystore.
+   */
+  @Column(name = "sp_signing_key_alias", length = 100, nullable = true)
+  @ToString.Exclude
+  private String spSigningKeyAlias;
+
+  /**
+   * Filesystem path or other reference to the PKCS#12 keystore containing the SP encryption key/cert.
+   * **WARNING:** Ensure path is secured and validated.
+   */
+  @Column(name = "sp_encryption_keystore_path", length = 255, nullable = true)
+  @ToString.Exclude
+  private String spEncryptionKeystorePath;
+
+  /**
+   * ENCRYPTED password for the SP encryption keystore.
+   * **WARNING:** MUST be encrypted using EncryptionService.
+   */
+  @Column(name = "sp_encryption_keystore_password_encrypted", length = 512, nullable = true)
+  @ToString.Exclude
+  private String spEncryptionKeystorePasswordEncrypted;
+
+  /**
+   * Alias of the encryption key/cert entry within the SP encryption keystore.
+   */
+  @Column(name = "sp_encryption_key_alias", length = 100, nullable = true)
+  @ToString.Exclude
+  private String spEncryptionKeyAlias;
+
+  /**
+   * Optional: Explicitly store the IdP's verification certificate in PEM format.
+   * Usually obtained from metadata, but can be provided here as an override or fallback.
    */
   @Lob
-  @Column(name = "sp_encryption_certificate", columnDefinition = "TEXT")
+  @Column(name = "idp_verification_certificate_pem", columnDefinition = "TEXT")
   @JdbcTypeCode(SqlTypes.LONGVARCHAR)
   @ToString.Exclude
-  private String serviceProviderEncryptionCertificate; // Placeholder
+  private String idpVerificationCertificatePem;
 
-  /**
-   * Placeholder for the Identity Provider's signing certificate (public key) in PEM format.
-   * Used by this SP to verify the signature on incoming assertions and SLO messages.
-   * Often obtained from IdP metadata.
-   * **WARNING:** Store securely if not using metadata URL.
-   */
-  @Lob
-  @Column(name = "idp_signing_certificate", columnDefinition = "TEXT")
-  @JdbcTypeCode(SqlTypes.LONGVARCHAR)
-  @ToString.Exclude
-  private String identityProviderSigningCertificate; // Placeholder
 
   // --- Attribute Mapping ---
 
@@ -191,10 +216,14 @@ public class SamlConfig extends Auditable<String> { // Audited by String (userna
    */
   @Override
   public String toString() {
+    // Preserving original toString structure, adapted for new fields
     return "SamlConfig{" +
             "id=" + id +
             ", organizationId=" + (organization != null ? organization.getId() : null) +
             ", serviceProviderEntityId='" + serviceProviderEntityId + '\'' +
+            // Added indication if keystore is configured, without showing path/alias
+            ", signingKeystoreConfigured=" + (StringUtils.hasText(spSigningKeystorePath) && StringUtils.hasText(spSigningKeyAlias)) +
+            ", encryptionKeystoreConfigured=" + (StringUtils.hasText(spEncryptionKeystorePath) && StringUtils.hasText(spEncryptionKeyAlias)) +
             ", enabled=" + enabled +
             ", createdDate=" + createdDate +
             '}';

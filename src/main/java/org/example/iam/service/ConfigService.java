@@ -4,6 +4,7 @@ package org.example.iam.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.iam.constant.ApiErrorMessages;
+import org.example.iam.constant.ApiResponseMessages;
 import org.example.iam.constant.AuditEventType;
 import org.example.iam.constant.RoleType;
 import org.example.iam.dto.Oauth2ConfigDto;
@@ -33,8 +34,8 @@ import java.util.UUID;
  * primarily SAML 2.0 and OAuth 2.0 settings for Single Sign-On (SSO).
  * <p>
  * Handles fetching, creating, and updating configurations, including authorization checks
- * based on user roles and organization membership. Interacts with configuration repositories
- * and the audit logging service.
+ * based on user roles and organization membership. Interacts with configuration repositories,
+ * auditing services, and the encryption service for sensitive data.
  * </p>
  */
 @Service
@@ -47,8 +48,8 @@ public class ConfigService {
   private final SamlConfigRepository samlConfigRepository;
   private final Oauth2ConfigRepository oauth2ConfigRepository;
   private final AuditEventService auditEventService;
-  // Inject encryption service if handling client secrets securely
-  // private final EncryptionService encryptionService;
+  private final EncryptionService encryptionService;
+  // private final CredentialService credentialService; // Not needed for save/update usually
 
   // --- SAML Configuration Methods ---
 
@@ -73,12 +74,12 @@ public class ConfigService {
             .orElseThrow(() -> new ResourceNotFoundException("SAML configuration not found for organization: " + orgId));
 
     // Log successful access audit event
-    auditEventService.logEvent(AuditEventType.ORG_CONFIG_UPDATED, // Using generic config update type for access too
+    auditEventService.logEvent(AuditEventType.ORG_CONFIG_UPDATED,
             String.format("SAML config accessed for organization '%s' by %s", org.getOrgName(), actor),
             actor,
             "SUCCESS",
-            "SAML_CONFIG", config.getId().toString(), orgId, // Target the config record
-            null); // No additional details needed for read
+            "SAML_CONFIG", config.getId().toString(), orgId,
+            null);
 
     log.info("Successfully retrieved SAML config ID {} for Org '{}' by actor '{}'", config.getId(), org.getOrgName(), actor);
     return SamlConfigDto.fromEntity(config);
@@ -86,44 +87,40 @@ public class ConfigService {
 
   /**
    * Creates or updates the SAML configuration for a given organization.
-   * Performs authorization check: requires SUPER role or ADMIN role of the target organization.
-   * Prevents configuration for the Super Organization.
-   * Handles secure storage placeholder logic for certificates/keys.
+   * Encrypts keystore passwords before saving.
    *
    * @param orgId         The UUID of the organization.
-   * @param dto           The {@link SamlConfigDto} containing new/updated configuration data.
+   * @param dto           The {@link SamlConfigDto} containing new/updated configuration data (passwords in plaintext).
    * @param actor         The username of the requesting user.
    * @param actorOrgId    The organization UUID of the requesting user.
    * @param actorRoles    The roles of the requesting user.
-   * @return The updated/created {@link SamlConfigDto}.
+   * @return The updated/created {@link SamlConfigDto} (excluding sensitive fields).
    * @throws ResourceNotFoundException    if the organization doesn't exist.
    * @throws AccessDeniedException        if the actor lacks permission.
    * @throws OperationNotAllowedException if attempting to configure the Super Org.
    * @throws BadRequestException          if required fields in the DTO are missing.
+   * @throws RuntimeException if encryption fails.
    */
   @Transactional
   public SamlConfigDto saveOrUpdateSamlConfig(UUID orgId, SamlConfigDto dto, String actor, UUID actorOrgId, Set<RoleType> actorRoles) {
     log.info("Actor '{}' saving/updating SAML config for Org ID '{}'", actor, orgId);
     Organization org = findAndAuthorizeOrgAdminOrSuperAccess(orgId, actor, actorOrgId, actorRoles); // Auth check
 
-    // Business Rule: Cannot configure SAML for the Super Organization
     if (org.isSuperOrg()) {
       throw new OperationNotAllowedException("SAML configuration is not applicable to the Super Organization.");
     }
 
-    // Find existing or create new config entity
     SamlConfig config = samlConfigRepository.findByOrganization(org)
             .orElseGet(() -> {
               log.info("No existing SAML config found for Org ID '{}', creating new.", orgId);
-              return SamlConfig.builder().organization(org).build(); // Ensure link to org
+              return SamlConfig.builder().organization(org).build();
             });
 
     boolean isNewConfig = (config.getId() == null);
-    AuditEventType eventType = AuditEventType.ORG_CONFIG_UPDATED; // Use same type for create/update
+    AuditEventType eventType = AuditEventType.ORG_CONFIG_UPDATED;
     String actionVerb = isNewConfig ? "created" : "updated";
 
     // --- Map DTO fields to Entity ---
-    // Basic validation for required fields
     if (!StringUtils.hasText(dto.getServiceProviderEntityId())) {
       throw new BadRequestException("Service Provider Entity ID is required for SAML configuration.");
     }
@@ -131,42 +128,69 @@ public class ConfigService {
       throw new BadRequestException("Assertion Consumer Service (ACS) URL is required for SAML configuration.");
     }
 
-    config.setIdentityProviderMetadataUrl(dto.getIdentityProviderMetadataUrl()); // Can be null
+    config.setIdentityProviderMetadataUrl(dto.getIdentityProviderMetadataUrl());
     config.setServiceProviderEntityId(dto.getServiceProviderEntityId());
     config.setAssertionConsumerServiceUrl(dto.getAssertionConsumerServiceUrl());
-    config.setSingleLogoutServiceUrl(dto.getSingleLogoutServiceUrl()); // Can be null
-    // Use default if provided format is blank, otherwise use provided format
+    config.setSingleLogoutServiceUrl(dto.getSingleLogoutServiceUrl());
     config.setNameIdFormat(StringUtils.hasText(dto.getNameIdFormat())
             ? dto.getNameIdFormat()
             : "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified");
-    config.setSignRequests(Boolean.TRUE.equals(dto.getSignRequests())); // Handle null boolean gracefully
-    config.setWantAssertionsSigned(Boolean.TRUE.equals(dto.getWantAssertionsSigned())); // Handle null boolean gracefully
-    config.setAttributeMappingUsername(dto.getAttributeMappingUsername()); // Can be null/default
-    config.setAttributeMappingEmail(dto.getAttributeMappingEmail()); // Can be null/default
-    config.setAttributeMappingRoles(dto.getAttributeMappingRoles()); // Can be null
-    config.setEnabled(Boolean.TRUE.equals(dto.getEnabled())); // Handle null boolean gracefully
+    config.setSignRequests(Boolean.TRUE.equals(dto.getSignRequests()));
+    config.setWantAssertionsSigned(Boolean.TRUE.equals(dto.getWantAssertionsSigned()));
+    config.setAttributeMappingUsername(dto.getAttributeMappingUsername());
+    config.setAttributeMappingEmail(dto.getAttributeMappingEmail());
+    config.setAttributeMappingRoles(dto.getAttributeMappingRoles());
+    config.setEnabled(Boolean.TRUE.equals(dto.getEnabled()));
 
-    // --- TODO: Secure Handling for Certificates/Keys ---
-    // Example placeholder logic (replace with actual secure storage/retrieval)
-    // if (StringUtils.hasText(dto.getServiceProviderSigningCertificateInput())) {
-    //     String certRef = certificateService.storeCertificate(dto.getServiceProviderSigningCertificateInput());
-    //     config.setServiceProviderSigningCertificate(certRef); // Store reference, not actual cert
-    // }
-    log.warn("[Security Placeholder] SAML certificate/key handling in ConfigService is not securely implemented!");
+    // --- Handle Keystore References and Encrypt Passwords ---
+    try {
+      // Use correct getters from DTO and setters for Entity
+      if (StringUtils.hasText(dto.getSpSigningKeystorePathInput())) { // <<< CORRECTED Getter
+        config.setSpSigningKeystorePath(dto.getSpSigningKeystorePathInput()); // <<< CORRECTED Setter
+      }
+      if (StringUtils.hasText(dto.getSpSigningKeyAliasInput())) { // <<< CORRECTED Getter
+        config.setSpSigningKeyAlias(dto.getSpSigningKeyAliasInput()); // <<< CORRECTED Setter
+      }
+      if (StringUtils.hasText(dto.getSpSigningKeystorePasswordInput())) { // <<< CORRECTED Getter
+        config.setSpSigningKeystorePasswordEncrypted(encryptionService.encrypt(dto.getSpSigningKeystorePasswordInput())); // <<< CORRECTED Setter
+        log.debug("Encrypted SP Signing Keystore password for config update.");
+      } else if (isNewConfig && StringUtils.hasText(config.getSpSigningKeystorePath())) {
+        throw new BadRequestException("SP Signing Keystore password is required when setting the keystore path.");
+      }
+
+      if (StringUtils.hasText(dto.getSpEncryptionKeystorePathInput())) { // <<< CORRECTED Getter
+        config.setSpEncryptionKeystorePath(dto.getSpEncryptionKeystorePathInput()); // <<< CORRECTED Setter
+      }
+      if (StringUtils.hasText(dto.getSpEncryptionKeyAliasInput())) { // <<< CORRECTED Getter
+        config.setSpEncryptionKeyAlias(dto.getSpEncryptionKeyAliasInput()); // <<< CORRECTED Setter
+      }
+      if (StringUtils.hasText(dto.getSpEncryptionKeystorePasswordInput())) { // <<< CORRECTED Getter
+        config.setSpEncryptionKeystorePasswordEncrypted(encryptionService.encrypt(dto.getSpEncryptionKeystorePasswordInput())); // <<< CORRECTED Setter
+        log.debug("Encrypted SP Encryption Keystore password for config update.");
+      } else if (isNewConfig && StringUtils.hasText(config.getSpEncryptionKeystorePath())) {
+        throw new BadRequestException("SP Encryption Keystore password is required when setting the keystore path.");
+      }
+
+      if (StringUtils.hasText(dto.getIdpVerificationCertificatePemInput())) { // <<< CORRECTED Getter
+        config.setIdpVerificationCertificatePem(dto.getIdpVerificationCertificatePemInput()); // <<< CORRECTED Setter
+      }
+    } catch (Exception e) {
+      log.error("Failed to encrypt keystore password during SAML config update for Org ID {}: {}", orgId, e.getMessage(), e);
+      throw new RuntimeException("Failed to process keystore password.", e);
+    }
 
     // Save the entity
     SamlConfig savedConfig = samlConfigRepository.save(config);
     log.info("SAML config ID '{}' {} for Org '{}' by actor '{}'", savedConfig.getId(), actionVerb, org.getOrgName(), actor);
 
-    // Log audit event for creation/update
+    // Log audit event
     auditEventService.logEvent(eventType,
             String.format("SAML config for organization '%s' %s by %s", org.getOrgName(), actionVerb, actor),
-            actor,
-            "SUCCESS",
-            "SAML_CONFIG", savedConfig.getId().toString(), orgId, // Target the config record
-            null); // Details could include changed fields if needed
+            actor, "SUCCESS",
+            "SAML_CONFIG", savedConfig.getId().toString(), orgId,
+            "Enabled: " + savedConfig.isEnabled());
 
-    return SamlConfigDto.fromEntity(savedConfig); // Return DTO representation
+    return SamlConfigDto.fromEntity(savedConfig);
   }
 
   // --- OAuth2 Configuration Methods ---
@@ -191,12 +215,10 @@ public class ConfigService {
     Oauth2Config config = oauth2ConfigRepository.findByOrganization(org)
             .orElseThrow(() -> new ResourceNotFoundException("OAuth2 configuration not found for organization: " + orgId));
 
-    // Log successful access audit event
     auditEventService.logEvent(AuditEventType.ORG_CONFIG_UPDATED,
             String.format("OAuth2 config (Provider: %s) accessed for organization '%s' by %s", config.getProvider(), org.getOrgName(), actor),
-            actor,
-            "SUCCESS",
-            "OAUTH2_CONFIG", config.getId().toString(), orgId, // Target the config record
+            actor, "SUCCESS",
+            "OAUTH2_CONFIG", config.getId().toString(), orgId,
             null);
 
     log.info("Successfully retrieved OAuth2 config ID {} (Provider: {}) for Org '{}' by actor '{}'", config.getId(), config.getProvider(), org.getOrgName(), actor);
@@ -205,27 +227,25 @@ public class ConfigService {
 
   /**
    * Creates or updates the OAuth2 configuration for a given organization.
-   * Performs authorization check: requires SUPER role or ADMIN role of the target organization.
-   * Prevents configuration for the Super Organization.
-   * Handles secure storage placeholder logic for the client secret.
+   * Encrypts the client secret before saving.
    *
-   * @param orgId         The UUID of the organization.
-   * @param dto           The {@link Oauth2ConfigDto} containing new/updated configuration data.
-   * @param actor         The username of the requesting user.
-   * @param actorOrgId    The organization UUID of the requesting user.
-   * @param actorRoles    The roles of the requesting user.
-   * @return The updated/created {@link Oauth2ConfigDto}.
+   * @param orgId      The UUID of the organization.
+   * @param dto        The {@link Oauth2ConfigDto} containing new/updated configuration data (secret in plaintext).
+   * @param actor      The username of the requesting user.
+   * @param actorOrgId The organization UUID of the requesting user.
+   * @param actorRoles The roles of the requesting user.
+   * @return The updated/created {@link Oauth2ConfigDto} (excluding sensitive fields).
    * @throws ResourceNotFoundException    if the organization doesn't exist.
    * @throws AccessDeniedException        if the actor lacks permission.
    * @throws OperationNotAllowedException if attempting to configure the Super Org.
    * @throws BadRequestException          if required fields (provider, clientId, clientSecret on create) are missing.
+   * @throws RuntimeException if encryption fails.
    */
   @Transactional
   public Oauth2ConfigDto saveOrUpdateOauth2Config(UUID orgId, Oauth2ConfigDto dto, String actor, UUID actorOrgId, Set<RoleType> actorRoles) {
     log.info("Actor '{}' saving/updating OAuth2 config for Org ID '{}'", actor, orgId);
     Organization org = findAndAuthorizeOrgAdminOrSuperAccess(orgId, actor, actorOrgId, actorRoles); // Auth check
 
-    // Business Rule: Cannot configure OAuth2 for the Super Organization
     if (org.isSuperOrg()) {
       throw new OperationNotAllowedException("OAuth2 configuration is not applicable to the Super Organization.");
     }
@@ -233,7 +253,7 @@ public class ConfigService {
     Oauth2Config config = oauth2ConfigRepository.findByOrganization(org)
             .orElseGet(() -> {
               log.info("No existing OAuth2 config found for Org ID '{}', creating new.", orgId);
-              return Oauth2Config.builder().organization(org).build(); // Ensure link
+              return Oauth2Config.builder().organization(org).build();
             });
 
     boolean isNewConfig = (config.getId() == null);
@@ -241,7 +261,6 @@ public class ConfigService {
     String actionVerb = isNewConfig ? "created" : "updated";
 
     // --- Map DTO fields to Entity ---
-    // Basic validation for required fields
     if (!StringUtils.hasText(dto.getProvider())) {
       throw new BadRequestException("Provider identifier is required for OAuth2 configuration.");
     }
@@ -252,18 +271,20 @@ public class ConfigService {
     config.setProvider(dto.getProvider());
     config.setClientId(dto.getClientId());
 
-    // Handle Client Secret (Placeholder - Needs secure implementation)
+    // Handle Client Secret Encryption
     if (StringUtils.hasText(dto.getClientSecretInput())) {
-      // *** Replace with actual encryption/storage logic ***
-      // String encryptedSecret = encryptionService.encrypt(dto.getClientSecretInput());
-      // config.setClientSecret(encryptedSecret); // Store encrypted value or reference
-      config.setClientSecret("PLACEHOLDER_ENCRYPTED_" + UUID.randomUUID().toString()); // Insecure placeholder
-      log.warn("[Security Placeholder] Storing INSECURE placeholder for OAuth2 client secret for Org '{}' update by actor '{}'.", org.getOrgName(), actor);
+      try {
+        String encryptedSecret = encryptionService.encrypt(dto.getClientSecretInput());
+        // Use the correct setter for the renamed field in Oauth2Config
+        config.setClientSecretEncrypted(encryptedSecret); // <<< Use correct setter
+        log.debug("Encrypted OAuth2 client secret for config update.");
+      } catch (Exception e) {
+        log.error("Failed to encrypt OAuth2 client secret during config update for Org ID {}: {}", orgId, e.getMessage(), e);
+        throw new RuntimeException("Failed to process client secret.", e);
+      }
     } else if (isNewConfig) {
-      // Secret must be provided when creating a new configuration
       throw new BadRequestException("Client Secret is required when creating a new OAuth2 configuration.");
     }
-    // If it's an update and clientSecretInput is empty/null, we don't change the existing secret.
 
     // Map remaining fields
     config.setAuthorizationUri(dto.getAuthorizationUri());
@@ -271,9 +292,7 @@ public class ConfigService {
     config.setUserInfoUri(dto.getUserInfoUri());
     config.setJwkSetUri(dto.getJwkSetUri());
     config.setRedirectUriTemplate(dto.getRedirectUriTemplate());
-    // Use default scopes if provided scopes string is blank
     config.setScopes(StringUtils.hasText(dto.getScopes()) ? dto.getScopes() : "openid,profile,email");
-    // Use default attribute names if provided values are blank
     config.setUserNameAttributeName(StringUtils.hasText(dto.getUserNameAttributeName())
             ? dto.getUserNameAttributeName() : "sub");
     config.setUserEmailAttributeName(StringUtils.hasText(dto.getUserEmailAttributeName())
@@ -289,17 +308,15 @@ public class ConfigService {
     auditEventService.logEvent(eventType,
             String.format("OAuth2 config (Provider: %s) for org '%s' %s by %s",
                     savedConfig.getProvider(), org.getOrgName(), actionVerb, actor),
-            actor,
-            "SUCCESS",
-            "OAUTH2_CONFIG", savedConfig.getId().toString(), orgId, // Target the config record
-            null); // Details could include provider change if needed
+            actor, "SUCCESS",
+            "OAUTH2_CONFIG", savedConfig.getId().toString(), orgId,
+            "Enabled: " + savedConfig.isEnabled());
 
-    return Oauth2ConfigDto.fromEntity(savedConfig); // Return DTO (without secret)
+    return Oauth2ConfigDto.fromEntity(savedConfig);
   }
 
 
-  // --- Helper Methods for Authorization Checks ---
-
+  // --- Helper Methods for Authorization Checks --- (Original Comments Preserved)
   /**
    * Finds an organization by ID and checks if the requesting actor has permission to access its details.
    * Access allowed for SUPER users or members (any role) of the target organization.
@@ -317,7 +334,6 @@ public class ConfigService {
             .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID, targetOrgId)));
 
     boolean isSuper = actorRoles.contains(RoleType.SUPER);
-    // Check if the actor's organization ID matches the target organization ID
     boolean isMemberOfOrg = Objects.equals(targetOrgId, actorOrgId);
 
     if (!isSuper && !isMemberOfOrg) {
@@ -346,7 +362,6 @@ public class ConfigService {
             .orElseThrow(() -> new ResourceNotFoundException(String.format(ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID, targetOrgId)));
 
     boolean isSuper = actorRoles.contains(RoleType.SUPER);
-    // Check if the actor is an ADMIN AND their org ID matches the target org ID
     boolean isAdminOfThisOrg = actorRoles.contains(RoleType.ADMIN) && Objects.equals(targetOrgId, actorOrgId);
 
     if (!isSuper && !isAdminOfThisOrg) {

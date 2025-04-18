@@ -7,6 +7,8 @@ import org.example.iam.audit.Auditable; // Base class for audit fields
 import org.example.iam.constant.RoleType; // Enum defining standard roles
 import org.hibernate.annotations.GenericGenerator;
 
+import java.io.Serial;
+import java.io.Serializable;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
@@ -32,8 +34,10 @@ import java.util.UUID;
 @Builder(toBuilder = true) // Allows copying and modifying using builder pattern
 // Include ID for equality checks, call super for Auditable fields' equality
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
-public class Role extends Auditable<String> { // Audited by String (username/SYSTEM)
+public class Role extends Auditable<String> implements Serializable { // Audited by String (username/SYSTEM)
 
+  @Serial // Requires Java 14+
+  private static final long serialVersionUID = 3L; // Basic version UID
   /**
    * Primary key (UUID) for the role.
    */

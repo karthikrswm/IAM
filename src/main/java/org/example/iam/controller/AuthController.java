@@ -50,14 +50,14 @@ public class AuthController {
   @Operation(summary = "Authenticate User (JWT)",
           description = "Authenticates a user with username/email and password, returning a JWT upon success.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.LOGIN_SUCCESSFUL,
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.LOGIN_SUCCESSFUL, // Use constant
                   content = @Content(mediaType = "application/json",
-                          schema = @Schema(implementation = ApiResponse.class))), // Ref schema
+                          schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "400", description = ApiErrorMessages.INVALID_INPUT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.AUTHENTICATION_FAILED,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
-          @ApiResponse(responseCode = "403", description = ApiErrorMessages.ACCOUNT_LOCKED + " / " + ApiErrorMessages.ACCOUNT_DISABLED, // Indicate potential 403 reasons from service
+          @ApiResponse(responseCode = "403", description = ApiErrorMessages.ACCOUNT_LOCKED + " / " + ApiErrorMessages.ACCOUNT_DISABLED + " / " + ApiErrorMessages.TEMPORARY_PASSWORD_REQUIRES_RESET, // Updated potential reasons
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "500", description = ApiErrorMessages.GENERAL_ERROR,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
@@ -69,7 +69,9 @@ public class AuthController {
     // AuthService handles authentication logic, including potential exceptions like BadCredentialsException etc.
     // GlobalExceptionHandler will map these exceptions to appropriate ApiError responses.
     LoginResponse loginResponse = authService.login(loginRequest);
-    ApiSuccessResponse<LoginResponse> response = ApiSuccessResponse.ok(loginResponse, ApiResponseMessages.LOGIN_SUCCESSFUL);
+    // Determine appropriate success message based on requiresPasswordChange flag
+    String successMessage = loginResponse.isRequiresPasswordChange() ? ApiResponseMessages.TEMPORARY_PASSWORD_LOGIN : ApiResponseMessages.LOGIN_SUCCESSFUL;
+    ApiSuccessResponse<LoginResponse> response = ApiSuccessResponse.ok(loginResponse, successMessage); // Use dynamic success message
     return ResponseEntity.ok(response);
   }
 
@@ -83,9 +85,11 @@ public class AuthController {
   @Operation(summary = "Verify User Email",
           description = "Verifies a user's email address using a token sent during registration or creation.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.VERIFICATION_SUCCESSFUL,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.VERIFICATION_SUCCESSFUL, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "400", description = ApiErrorMessages.VERIFICATION_TOKEN_INVALID,
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
+          @ApiResponse(responseCode = "403", description = ApiErrorMessages.USER_ALREADY_ENABLED, // Add forbidden if already enabled
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "410", description = ApiErrorMessages.VERIFICATION_TOKEN_EXPIRED, // GONE for expired
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
@@ -97,7 +101,7 @@ public class AuthController {
     // Log only prefix for security
     log.info("Received email verification request with token prefix: {}", token.substring(0, Math.min(token.length(), 8)));
     authService.verifyEmail(token); // Handles token validation and user activation
-    ApiSuccessResponse<Void> response = ApiSuccessResponse.ok(ApiResponseMessages.VERIFICATION_SUCCESSFUL);
+    ApiSuccessResponse<Void> response = ApiSuccessResponse.ok(ApiResponseMessages.VERIFICATION_SUCCESSFUL); // Use constant
     return ResponseEntity.ok(response);
   }
 
@@ -113,8 +117,8 @@ public class AuthController {
           description = "Sends a password reset link to the user's primary email address if the account exists.")
   @ApiResponses(value = {
           // Always return 200 OK to prevent leaking information about email existence
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.PASSWORD_RESET_REQUEST_SUCCESS,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.PASSWORD_RESET_REQUEST_SUCCESS, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "400", description = ApiErrorMessages.INVALID_INPUT, // For invalid email format in DTO
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
   })
@@ -124,7 +128,7 @@ public class AuthController {
     log.info("Received forgot password request for email: {}", forgotPasswordRequest.getEmail());
     authService.forgotPassword(forgotPasswordRequest.getEmail()); // Handles logic and email sending
     // Always return a generic success message regardless of whether the user existed.
-    ApiSuccessResponse<Void> response = ApiSuccessResponse.ok(ApiResponseMessages.PASSWORD_RESET_REQUEST_SUCCESS);
+    ApiSuccessResponse<Void> response = ApiSuccessResponse.ok(ApiResponseMessages.PASSWORD_RESET_REQUEST_SUCCESS); // Use constant
     log.debug("Forgot password request processing completed for email (response sent): {}",
             forgotPasswordRequest.getEmail());
     return ResponseEntity.ok(response);
@@ -140,8 +144,8 @@ public class AuthController {
   @Operation(summary = "Reset Password Using Token",
           description = "Sets a new password for the user using a valid token received via email.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.PASSWORD_RESET_SUCCESS,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.PASSWORD_RESET_SUCCESS, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "400", description = ApiErrorMessages.PASSWORD_RESET_TOKEN_INVALID + " / " + ApiErrorMessages.PASSWORD_MISMATCH,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "410", description = ApiErrorMessages.PASSWORD_RESET_TOKEN_EXPIRED, // GONE for expired
@@ -154,7 +158,7 @@ public class AuthController {
     String tokenPrefix = resetPasswordRequest.getToken().substring(0, Math.min(resetPasswordRequest.getToken().length(), 8));
     log.info("Received password reset request with token prefix: {}", tokenPrefix);
     authService.resetPassword(resetPasswordRequest); // Handles token validation and password update
-    ApiSuccessResponse<Void> response = ApiSuccessResponse.ok(ApiResponseMessages.PASSWORD_RESET_SUCCESS);
+    ApiSuccessResponse<Void> response = ApiSuccessResponse.ok(ApiResponseMessages.PASSWORD_RESET_SUCCESS); // Use constant
     log.info("Password reset successful for token prefix: {}", tokenPrefix);
     return ResponseEntity.ok(response);
   }
@@ -164,17 +168,17 @@ public class AuthController {
    * Only applicable if the user exists and is not already enabled.
    *
    * @param resendRequest DTO containing the user's primary email address.
-   * @return ResponseEntity containing ApiResponse<Void>. Always returns a generic success message.
+   * @return ResponseEntity containing ApiResponse<Void>. Returns specific error if already enabled.
    */
   @Operation(summary = "Resend Verification Email",
           description = "Requests a new verification email to be sent if the user exists and is not yet enabled.")
   @ApiResponses(value = {
-          // Always return 200 OK for security reasons
+          // Return 200 OK on success or if user doesn't exist
           @ApiResponse(responseCode = "200", description = "If your account exists and requires verification, a new email has been sent.",
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "400", description = ApiErrorMessages.INVALID_INPUT, // For invalid email format in DTO
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
-          @ApiResponse(responseCode = "403", description = ApiErrorMessages.USER_ALREADY_ENABLED, // Forbidden if already enabled
+          @ApiResponse(responseCode = "403", description = ApiErrorMessages.USER_ALREADY_ENABLED, // Use 403 Forbidden if already enabled
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class)))
   })
   @PostMapping("/resend-verification")
@@ -187,11 +191,11 @@ public class AuthController {
       // Catch the specific exception if the user is already enabled
       // GlobalExceptionHandler will handle mapping this to a 403 response
       log.warn("Resend verification failed for {}: {}", resendRequest.getEmail(), e.getMessage());
-      throw e;
+      throw e; // Re-throw for GlobalExceptionHandler
     }
-    // Always return a generic success message to avoid confirming email existence/status.
+    // Always return a generic success message if no exception (avoids confirming email existence/status).
     ApiSuccessResponse<Void> response = ApiSuccessResponse.ok(
-            "If your account exists and requires verification, a new email has been sent.");
+            "If your account exists and requires verification, a new email has been sent."); // Keep generic message
     log.debug("Resend verification request processing completed for email (response sent): {}",
             resendRequest.getEmail());
     return ResponseEntity.ok(response);

@@ -10,7 +10,11 @@ import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.scheduling.annotation.Async; // For sending emails asynchronously
 import org.springframework.stereotype.Service;
+import org.springframework.util.CollectionUtils; // <<< ADDED import
+import org.springframework.util.StringUtils;
 import org.springframework.web.util.UriComponentsBuilder; // For building URLs
+
+import java.util.List; // <<< ADDED import
 
 /**
  * Service implementation for sending email notifications using Spring Mail.
@@ -38,6 +42,10 @@ public class EmailNotificationService implements NotificationService {
   // Base URL for constructing links in emails (verification, password reset)
   @Value("${iam.base.url:http://localhost:8080}") // Default for local dev
   private String applicationBaseUrl;
+
+  // Expiry warning days (used for email text)
+  @Value("${security.account.credentials.warn-days:14}")
+  private int passwordWarnDays;
 
   /**
    * Sends an email verification notification asynchronously.
@@ -71,14 +79,9 @@ public class EmailNotificationService implements NotificationService {
     messageBody.append(String.format("Hello %s,\n\n", user.getUsername()));
     messageBody.append("Thank you for registering. Please verify your email address by clicking the link below:\n");
     messageBody.append(verificationUrl).append("\n\n");
-    messageBody.append(String.format("This link is valid for %d minutes.\n\n", 1440)); // TODO: Make duration configurable if needed
+    messageBody.append("This link is valid for 24 hours.\n\n"); // Hardcoded for now, could be property
 
     if (temporaryPassword != null) {
-      // --- SECURITY WARNING ---
-      // Including temporary passwords in email is insecure.
-      // Production systems should ideally guide the user through a forced password reset
-      // immediately after email verification instead of sending a password directly.
-      // Consider removing this section or making it conditional based on security policy.
       log.warn("Including insecure temporary password in verification email for user '{}'.", user.getUsername());
       messageBody.append("----------------------------------------\n");
       messageBody.append("Your temporary password is: ").append(temporaryPassword).append("\n");
@@ -111,7 +114,6 @@ public class EmailNotificationService implements NotificationService {
     String subject = "Password Reset Request - IAM Service";
 
     // Construct the password reset URL (points to frontend path usually)
-    // Frontend app at this URL should handle the token and call the /api/v1/auth/reset-password endpoint
     String resetUrl = UriComponentsBuilder.fromHttpUrl(applicationBaseUrl) // Use base URL (might be frontend URL in reality)
             .path("/reset-password") // Example frontend path
             .queryParam("token", resetToken)
@@ -126,7 +128,7 @@ public class EmailNotificationService implements NotificationService {
             Click the link below to set a new password:
             %s
 
-            This link is valid for %d minutes.
+            This link is valid for 60 minutes.
 
             If you did not request a password reset, please ignore this email or contact support if you have concerns.
 
@@ -134,8 +136,7 @@ public class EmailNotificationService implements NotificationService {
             The IAM Team
             """,
             user.getUsername(),
-            resetUrl,
-            60 // TODO: Make duration configurable if needed
+            resetUrl
     );
 
     log.info("Attempting to send password reset email to '{}' for user '{}'.", recipientAddress, user.getUsername());
@@ -190,7 +191,6 @@ public class EmailNotificationService implements NotificationService {
 
     String recipientAddress = user.getPrimaryEmail();
     String subject = "Your Account Has Been Locked - IAM Service";
-    // TODO: Make lock duration configurable and potentially include in email
     String messageBody = String.format(
             """
             Hello %s,
@@ -198,7 +198,7 @@ public class EmailNotificationService implements NotificationService {
             Your IAM service account associated with this email address was temporarily locked
             due to multiple unsuccessful login attempts.
 
-            The lock will typically expire automatically after a short period.
+            The lock will typically expire automatically after a short period (if configured).
             If you continue to experience issues, please try resetting your password or contact support.
 
             Regards,
@@ -210,6 +210,128 @@ public class EmailNotificationService implements NotificationService {
     log.info("Attempting to send account locked notification email to '{}' for user '{}'.", recipientAddress, user.getUsername());
     sendEmail(recipientAddress, subject, messageBody);
   }
+
+  /**
+   * Sends a warning notification to the user that their password will expire soon.
+   *
+   * @param user            The user whose password is about to expire.
+   * @param daysUntilExpiry The number of days remaining until the password expires.
+   */
+  @Async("taskExecutor") // <<< ADDED Implementation
+  @Override
+  public void sendPasswordExpiryWarningEmail(User user, long daysUntilExpiry) {
+    if (user == null || user.getPrimaryEmail() == null) {
+      log.error("Cannot send password expiry warning email: User or primary email is null.");
+      return;
+    }
+
+    String recipientAddress = user.getPrimaryEmail();
+    String subject = "Password Expiry Warning - IAM Service";
+    String messageBody = String.format(
+            """
+            Hello %s,
+
+            This is a reminder that your password for the IAM service account will expire in %d day(s).
+
+            Please change your password before it expires to avoid any interruption in service.
+            You can change your password through your profile settings.
+
+            If you have already changed your password recently, please disregard this message.
+
+            Regards,
+            The IAM Team
+            """,
+            user.getUsername(),
+            daysUntilExpiry
+    );
+
+    log.info("Attempting to send password expiry warning email to '{}' for user '{}' ({} days remaining).",
+            recipientAddress, user.getUsername(), daysUntilExpiry);
+    sendEmail(recipientAddress, subject, messageBody);
+  }
+
+  /**
+   * Sends a notification to the user that their password has expired.
+   *
+   * @param user The user whose password has expired.
+   */
+  @Async("taskExecutor") // <<< ADDED Implementation
+  @Override
+  public void sendPasswordExpiredEmail(User user) {
+    if (user == null || user.getPrimaryEmail() == null) {
+      log.error("Cannot send password expired email: User or primary email is null.");
+      return;
+    }
+
+    String recipientAddress = user.getPrimaryEmail();
+    String subject = "Your Password Has Expired - IAM Service";
+    String messageBody = String.format(
+            """
+            Hello %s,
+
+            Your password for the IAM service account has expired.
+
+            You will need to reset your password to regain access to your account.
+            Please follow the password reset procedure or contact your administrator.
+
+            Regards,
+            The IAM Team
+            """,
+            user.getUsername()
+    );
+
+    log.info("Attempting to send password expired email to '{}' for user '{}'.",
+            recipientAddress, user.getUsername());
+    sendEmail(recipientAddress, subject, messageBody);
+  }
+
+  /**
+   * Sends a notification to the administrators of an organization that a user's password has expired.
+   *
+   * @param expiredUser The user whose password has expired.
+   * @param orgAdmins   A list of User entities representing the administrators of the organization.
+   */
+  @Async("taskExecutor") // <<< ADDED Implementation
+  @Override
+  public void sendAdminPasswordExpiredNotification(User expiredUser, List<User> orgAdmins) {
+    if (expiredUser == null || CollectionUtils.isEmpty(orgAdmins)) {
+      log.warn("Cannot send admin password expired notification: Expired user is null or no admins found.");
+      return;
+    }
+
+    String subject = String.format("User Password Expired Notification - %s", expiredUser.getUsername());
+    String messageBody = String.format(
+            """
+            Hello Administrator,
+
+            This notification is to inform you that the password for the following user in your organization has expired:
+
+            Username: %s
+            Primary Email: %s
+            Organization: %s
+
+            The user will be required to reset their password upon their next login attempt (if applicable) or via the standard password reset flow.
+
+            Regards,
+            IAM System Monitoring
+            """,
+            expiredUser.getUsername(),
+            expiredUser.getPrimaryEmail(),
+            expiredUser.getOrganization() != null ? expiredUser.getOrganization().getOrgName() : "N/A"
+    );
+
+    for (User admin : orgAdmins) {
+      if (admin != null && StringUtils.hasText(admin.getPrimaryEmail())) {
+        log.info("Attempting to send password expired notification for user '{}' to admin '{}' at '{}'.",
+                expiredUser.getUsername(), admin.getUsername(), admin.getPrimaryEmail());
+        sendEmail(admin.getPrimaryEmail(), subject, messageBody);
+      } else {
+        log.warn("Skipping admin notification for expired user '{}': Admin user object or primary email is invalid: {}",
+                expiredUser.getUsername(), admin);
+      }
+    }
+  }
+
 
   /**
    * Private helper method to actually send the email using JavaMailSender.

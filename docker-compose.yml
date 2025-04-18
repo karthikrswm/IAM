@@ -1,144 +1,166 @@
 # File: docker-compose.yml
-# Defines the infrastructure services (database, cache, mail catcher, message queue)
-# needed for developing and running the IAM application locally using Docker Compose.
-# Usage: Run 'docker-compose up -d' in the project root directory.
+# Defines infrastructure services AND the iam-consumer application service.
+# The main iam-service API will be run locally from the IDE.
 
-version: '3.8' # Use a recent Compose file version
+version: '3.8'
 
 services:
-  # --- MySQL Database ---
+  # --- Infrastructure Services ---
+
   mysql_db:
-    image: mysql:8.0 # Use a specific stable MySQL version
+    image: mysql:8.0
     container_name: iam_mysql
     restart: unless-stopped
     environment:
-      # Use variables from .env file, providing defaults if .env is missing/variable not set
-      MYSQL_DATABASE: iam_db
-      MYSQL_USER: iam_user
-      MYSQL_PASSWORD: iam_password_change_me # Sensitive - should be in .env
-      MYSQL_ROOT_PASSWORD: root_password_change_me # Sensitive - should be in .env
+      # Reads directly from Env.env file
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
     ports:
-      # Expose MySQL port to the host machine
-      - "3306:3306"
+      # Expose port to host for local iam-service connection
+      - "${MYSQL_PORT}:3306"
     volumes:
-      # Persist MySQL data using a named volume
       - mysql_data:/var/lib/mysql
     healthcheck:
-      # Check if MySQL server is ready to accept connections
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "iam_user", "-p", "iam_password_change_me"]
+      # Uses variables passed from Env.env
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u${MYSQL_USER}", "-p${MYSQL_PASSWORD}"]
       interval: 10s
-      timeout: 10s # Increased timeout
-      retries: 10 # Increased retries
-      start_period: 30s # Allow time for initialization
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
-  # --- Redis Cache/Session Store ---
   redis_cache:
-    image: redis:7-alpine # Use a recent Redis version with a small base image
+    image: redis:7-alpine
     container_name: iam_redis
     restart: unless-stopped
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
     ports:
-      # Expose Redis port to the host machine
-      - "6379:6379"
+      # Expose port to host for local iam-service connection
+      - "${REDIS_PORT}:6379"
     volumes:
-      # Persist Redis data using a named volume
       - redis_data:/data
-    # Uncomment and set REDIS_PASSWORD in .env if password protection is needed
-    # command: redis-server --requirepass ${REDIS_PASSWORD}
+    command: >
+      sh -c "if [ -n \"$REDIS_PASSWORD\" ]; then
+               redis-server --requirepass \"$REDIS_PASSWORD\"
+             else
+               redis-server
+             fi"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: >
+        sh -c "if [ -n \"$REDIS_PASSWORD\" ]; then
+                 redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG
+               else
+                 redis-cli ping | grep PONG
+               fi"
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # --- MailHog Email Catcher (for development) ---
   mailhog:
-    image: mailhog/mailhog:latest # Use latest MailHog image
+    image: mailhog/mailhog:latest
     container_name: iam_mailhog
     restart: unless-stopped
     ports:
-      # Expose SMTP port (for application to send email *to*)
-      - "1025:1025"
-      # Expose Web UI port (for viewing caught emails)
-      - "8025:8025"
+      # Expose ports to host for local iam-service connection and UI access
+      - "${MAILHOG_SMTP_PORT}:1025"
+      - "${MAILHOG_UI_PORT}:8025"
     logging:
-      # Configure basic log rotation for MailHog container logs
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
 
-  # --- Apache Zookeeper (Required by Kafka) ---
   zookeeper:
-    image: docker.io/bitnami/zookeeper:3.8 # Use a stable Bitnami Zookeeper image
+    image: docker.io/bitnami/zookeeper:3.8
     container_name: iam_zookeeper
     restart: unless-stopped
     ports:
-      # Expose Zookeeper port (primarily for Kafka connection)
-      - "2181:2181"
+      # Expose Zookeeper port (primarily needed by Kafka, but can be exposed if needed)
+      - "${ZOOKEEPER_PORT}:2181"
     volumes:
-      # Persist Zookeeper data
       - zookeeper_data:/bitnami/zookeeper
     environment:
-      # Allow Kafka brokers to connect without authentication (simple dev setup)
       - ALLOW_ANONYMOUS_LOGIN=yes
     healthcheck:
-      # Check Zookeeper server status
       test: ["CMD", "zkServer.sh", "status"]
       interval: 15s
       timeout: 10s
       retries: 10
 
-  # --- Apache Kafka Broker ---
   kafka:
-    image: docker.io/bitnami/kafka:3.5 # Use a recent stable Bitnami Kafka image
+    image: docker.io/bitnami/kafka:3.5
     container_name: iam_kafka
     restart: unless-stopped
     ports:
-      # Expose Kafka's EXTERNAL listener port to the host machine
-      - "9092:9092"
+      # Expose EXTERNAL listener port to host for local iam-service connection
+      - "${KAFKA_HOST_PORT}:9092"
     volumes:
-      # Persist Kafka data (logs, topics)
       - kafka_data:/bitnami/kafka
     environment:
-      # --- Connection to Zookeeper ---
-      KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181 # Use service name 'zookeeper'
-      # --- Listener Configuration (Crucial for connectivity) ---
-      # Listener 'INTERNAL' for communication within the Docker network (e.g., app -> kafka) on port 9093
-      # Listener 'EXTERNAL' for communication from outside the Docker network (e.g., host machine -> kafka) on port 9092
+      KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Internal listener (9093) for consumer in Docker, External (9092) for local iam-service
       KAFKA_CFG_LISTENERS: INTERNAL://:9093,EXTERNAL://:9092
-      # How clients should connect based on the listener they use:
-      # - INTERNAL clients connect to 'kafka:9093'
-      # - EXTERNAL clients connect to 'localhost:<KAFKA_PORT>' (using the host port mapped in 'ports' section)
-      KAFKA_CFG_ADVERTISED_LISTENERS: INTERNAL://kafka:9093,EXTERNAL://localhost:${KAFKA_PORT:-9092}
-      # Define the security protocol for each listener (PLAINTEXT for dev)
+      KAFKA_CFG_ADVERTISED_LISTENERS: INTERNAL://kafka:9093,EXTERNAL://localhost:${KAFKA_HOST_PORT}
       KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
-      # Specify which listener Kafka brokers should use for internal communication
       KAFKA_CFG_INTER_BROKER_LISTENER_NAME: INTERNAL
-      # --- Security (Dev Setup) ---
-      ALLOW_PLAINTEXT_LISTENER: "yes" # Allow non-SSL connections
-      # --- Topic Settings ---
-      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true" # Auto-create topics if they don't exist (convenient for dev)
-      KAFKA_CFG_NUM_PARTITIONS: 3 # Default partitions for auto-created topics
-      KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: 1 # Only 1 replica as we have a single broker
-      # --- Other Settings ---
-      # KAFKA_CFG_MESSAGE_MAX_BYTES: 1048576 # Default 1MB
-      # KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: 1 # Required for single broker
-      # KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1 # Required for single broker
-      # KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: 1 # Required for single broker
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: 1
     depends_on:
-      # Ensure Zookeeper is healthy before Kafka starts
       zookeeper:
         condition: service_healthy
     healthcheck:
-      # Check if Kafka broker is running by trying to list topics (requires kafka-topics.sh)
-      # Adjust path if using a different Kafka image
       test: ["CMD-SHELL", "/opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null || exit 1"]
       interval: 30s
-      timeout: 20s # Allow more time for topic listing
+      timeout: 20s
       retries: 10
-      start_period: 60s # Allow more time for Kafka to start fully
+      start_period: 60s
 
-# --- Named Volumes for Data Persistence ---
+  kafdrop:
+    image: obsidiandynamics/kafdrop:latest
+    container_name: iam_kafdrop
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      # Connects to internal listener of Kafka broker
+      KAFKA_BROKERCONNECT: ${KAFKA_BOOTSTRAP_SERVERS} # Reads internal address from Env.env
+      JVM_OPTS: "-Xms32M -Xmx64M"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+
+  # --- Application Services ---
+
+  # iam-service: # <<< COMMENTED OUT / REMOVED - Will run locally from IDE >>>
+
+  iam-consumer: # Definition for the consumer service running in Docker
+    container_name: iam_kafka_consumer
+    # image: azul/zulu-openjdk-alpine:21 # <<< REMOVED image override
+    build: # <<< ADDED Build Section Back
+      context: ../iam-consumer # Path to the separate consumer project
+      dockerfile: Dockerfile # Assumes Dockerfile uses azul/zulu-openjdk-alpine:21
+    restart: unless-stopped
+    environment:
+    # Activate the 'docker' Spring profile inside the container
+      - SPRING_PROFILES_ACTIVE=docker
+      # Consumer (in Docker) uses the INTERNAL Kafka listener address (kafka:9093)
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS}
+      # Pass topic names from .env file
+      - KAFKA_TOPIC_AUDIT_EVENTS=${KAFKA_TOPIC_AUDIT_EVENTS}
+      - KAFKA_TOPIC_AUDIT_EVENTS_DLT=${KAFKA_TOPIC_AUDIT_EVENTS_DLT}
+      # Add other env vars if consumer needs them (e.g., DB connection if it writes status)
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+
+# --- Named Volumes ---
 volumes:
   mysql_data:
     driver: local
@@ -148,8 +170,3 @@ volumes:
     driver: local
   kafka_data:
     driver: local
-
-# Optional: Define a network if needed for specific communication setup
-# networks:
-#   iam_network:
-#     driver: bridge

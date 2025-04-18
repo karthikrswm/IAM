@@ -3,6 +3,7 @@ package org.example.iam.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.example.iam.constant.ApiErrorMessages; // Import ApiErrorMessages
 import org.example.iam.constant.LoginType; // Import LoginType
 import org.example.iam.entity.Oauth2Config;
 import org.example.iam.entity.Organization;
@@ -85,34 +86,39 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
     UUID organizationId = extractOrgIdFromRegistrationId(registrationId);
     if (organizationId == null) {
       log.error("Failed to extract Organization UUID from registrationId: '{}'. Format mismatch.", registrationId);
-      throw createOAuth2Exception("invalid_registration_id", "Client registration ID format is invalid or missing organization UUID.");
+      // Use specific error message
+      throw createOAuth2Exception("invalid_registration", ApiErrorMessages.INVALID_INPUT + " (Invalid client registration format)");
     }
     log.debug("Extracted Organization ID '{}' from registrationId '{}'", organizationId, registrationId);
 
     // 3. Fetch associated Organization and its OAuth2 Configuration
     Organization organization = organizationRepository.findById(organizationId)
             .orElseThrow(() -> {
-              log.error("Organization ID '{}' (from registrationId '{}') not found in database.", organizationId, registrationId);
-              return createOAuth2Exception("organization_not_found", "Organization associated with this login configuration was not found.");
+              String orgNotFoundMsg = String.format(ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID, organizationId); // Use constant
+              log.error(orgNotFoundMsg + " (from registrationId '{}')", registrationId);
+              return createOAuth2Exception("organization_not_found", orgNotFoundMsg);
             });
 
     // 4. Validate Organization and Config state
     if (organization.getLoginType() != LoginType.OAUTH2) { // Use LoginType enum
       log.warn("Login attempt via OAuth2 for Org '{}' (ID: {}) which is configured for LoginType: {}.",
               organization.getOrgName(), organizationId, organization.getLoginType());
-      throw createOAuth2Exception("login_type_mismatch", "Organization is not configured for OAuth2 login.");
+      // Specific error message
+      throw createOAuth2Exception("login_type_mismatch", ApiErrorMessages.OPERATION_NOT_ALLOWED + " (Organization not configured for OAuth2 login)");
     }
 
     Oauth2Config oauth2Config = oauth2ConfigRepository.findByOrganization(organization)
             .orElseThrow(() -> {
-              log.error("OAuth2 configuration missing for Organization '{}' (ID: {}).", organization.getOrgName(), organizationId);
-              return createOAuth2Exception("configuration_error", "OAuth2 configuration missing for the organization.");
+              String configMissingMsg = "OAuth2 configuration missing for organization: " + organization.getOrgName();
+              log.error(configMissingMsg + " (ID: {}).", organizationId);
+              return createOAuth2Exception("configuration_error", ApiErrorMessages.CONFIGURATION_ERROR + " ("+ configMissingMsg + ")"); // Use constant
             });
 
     if (!oauth2Config.isEnabled()) {
       log.warn("OAuth2 login attempt for Org '{}' (ID: {}) but the configuration (Provider: {}) is disabled.",
               organization.getOrgName(), organizationId, oauth2Config.getProvider());
-      throw createOAuth2Exception("configuration_disabled", "OAuth2 login is currently disabled for this organization.");
+      // Specific error message
+      throw createOAuth2Exception("configuration_disabled", ApiErrorMessages.OPERATION_NOT_ALLOWED + " (OAuth2 login is disabled for this organization)");
     }
     log.debug("Organization '{}' and OAuth2 config (Provider: {}) validated successfully.", organization.getOrgName(), oauth2Config.getProvider());
 
@@ -127,9 +133,10 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
 
     // --- Validation of extracted attributes ---
     if (email == null) {
-      log.error("Could not extract required email attribute ('{}') from provider attributes for Org '{}'. Attributes: {}",
-              emailAttributeName, organization.getOrgName(), attributes);
-      throw createOAuth2Exception("missing_user_email", "Could not retrieve the required email attribute from the identity provider.");
+      String missingEmailMsg = "Could not retrieve the required email attribute ('" + emailAttributeName + "') from the identity provider.";
+      log.error(missingEmailMsg + " for Org '{}'. Attributes: {}",
+              organization.getOrgName(), attributes);
+      throw createOAuth2Exception("missing_user_email", ApiErrorMessages.INVALID_INPUT + " (" + missingEmailMsg + ")"); // Use constant
     }
     if (usernameSource == null) {
       log.warn("Could not extract designated username attribute ('{}') for Org '{}'. Using email '{}' as fallback username source.",
@@ -167,12 +174,14 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
     } catch (ResourceNotFoundException | BadRequestException | ConfigurationException e) {
       // Catch specific exceptions from UserService JIT logic
       log.error("Error during OAuth2 JIT provisioning for external email '{}' (Org: {}): {}", email, organizationId, e.getMessage(), e);
-      // Map to OAuth2AuthenticationException
-      throw createOAuth2Exception("user_provisioning_error", "Failed to find or create local user account: " + e.getMessage());
+      // Map to OAuth2AuthenticationException using more specific messages if possible
+      // e.g., if BadRequestException was due to domain validation -> provide that info
+      String jitErrorMsg = ApiErrorMessages.OPERATION_NOT_ALLOWED + " (User provisioning failed: " + e.getMessage() + ")";
+      throw createOAuth2Exception("user_provisioning_error", jitErrorMsg); // Use constant
     } catch (Exception e) {
       // Catch any other unexpected errors
       log.error("Unexpected error during OAuth2 JIT provisioning for external email '{}' (Org: {}): {}", email, organizationId, e.getMessage(), e);
-      throw createOAuth2Exception("internal_error", "An unexpected error occurred during user provisioning.");
+      throw createOAuth2Exception("internal_error", ApiErrorMessages.GENERAL_ERROR + " (User provisioning error)"); // Use constant
     }
   }
 
@@ -221,10 +230,11 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
    * Logs the error before throwing.
    *
    * @param errorCode   A standard OAuth2 error code (e.g., "invalid_request", "server_error") or a custom one.
-   * @param description A human-readable description of the error.
+   * @param description A human-readable description of the error. Should ideally use constants from ApiErrorMessages.
    * @return An OAuth2AuthenticationException instance.
    */
   private OAuth2AuthenticationException createOAuth2Exception(String errorCode, String description) {
+    // Use a more specific error code if applicable, e.g., "invalid_client", "access_denied"
     OAuth2Error error = new OAuth2Error(errorCode, description, null); // Error URI is optional
     // Log the specific error clearly before throwing
     log.error("OAuth2 Authentication Error during user loading: Code='{}', Description='{}'", errorCode, description);

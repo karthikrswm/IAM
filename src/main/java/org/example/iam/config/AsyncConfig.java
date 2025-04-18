@@ -2,12 +2,15 @@
 package org.example.iam.config;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value; // <<< ADDED import
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.Executor;
+// Import for RejectedExecutionHandler if configuring it
+// import java.util.concurrent.ThreadPoolExecutor;
 
 /**
  * Configuration class to enable and customize asynchronous method execution capabilities
@@ -17,6 +20,7 @@ import java.util.concurrent.Executor;
  * threads used for asynchronous tasks, such as sending emails or logging audit events,
  * preventing them from blocking the main application threads (e.g., web request threads).
  * Using a custom executor allows for fine-grained control over thread pool behavior.
+ * Configuration values are read from application properties.
  * </p>
  */
 @Configuration
@@ -24,12 +28,18 @@ import java.util.concurrent.Executor;
 @Slf4j
 public class AsyncConfig {
 
-  // --- Constants for Thread Pool Configuration ---
-  // These could be externalized to application.properties if more dynamic configuration is needed.
-  private static final int CORE_POOL_SIZE = 5;
-  private static final int MAX_POOL_SIZE = 10;
-  private static final int QUEUE_CAPACITY = 25;
-  private static final String THREAD_NAME_PREFIX = "Async-IAM-";
+  // --- Thread Pool Configuration Properties (Injected via @Value) ---
+  @Value("${async.executor.core-pool-size:5}") // Default if property missing
+  private int corePoolSize;
+
+  @Value("${async.executor.max-pool-size:10}") // Default if property missing
+  private int maxPoolSize;
+
+  @Value("${async.executor.queue-capacity:25}") // Default if property missing
+  private int queueCapacity;
+
+  @Value("${async.executor.thread-name-prefix:Async-IAM-}") // Default if property missing
+  private String threadNamePrefix;
 
   /**
    * Defines a custom {@link ThreadPoolTaskExecutor} bean named "taskExecutor" for handling
@@ -37,6 +47,7 @@ public class AsyncConfig {
    * <p>
    * This executor provides better resource management compared to the default
    * {@code SimpleAsyncTaskExecutor} by maintaining a pool of threads and a queue for pending tasks.
+   * Configuration values are injected from application properties.
    * </p>
    * <ul>
    * <li>{@code corePoolSize}: The number of threads to keep in the pool, even if they are idle.</li>
@@ -49,14 +60,14 @@ public class AsyncConfig {
    */
   @Bean(name = "taskExecutor") // Standard bean name recognized by @Async by default.
   public Executor taskExecutor() {
-    log.info("Initializing ThreadPoolTaskExecutor for @Async tasks (Core: {}, Max: {}, Queue: {})",
-            CORE_POOL_SIZE, MAX_POOL_SIZE, QUEUE_CAPACITY);
+    log.info("Initializing ThreadPoolTaskExecutor for @Async tasks (Core: {}, Max: {}, Queue: {}, Prefix: '{}')",
+            corePoolSize, maxPoolSize, queueCapacity, threadNamePrefix); // Use injected values
 
     ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-    executor.setCorePoolSize(CORE_POOL_SIZE);
-    executor.setMaxPoolSize(MAX_POOL_SIZE);
-    executor.setQueueCapacity(QUEUE_CAPACITY);
-    executor.setThreadNamePrefix(THREAD_NAME_PREFIX);
+    executor.setCorePoolSize(corePoolSize); // Use injected value
+    executor.setMaxPoolSize(maxPoolSize); // Use injected value
+    executor.setQueueCapacity(queueCapacity); // Use injected value
+    executor.setThreadNamePrefix(threadNamePrefix); // Use injected value
 
     // Optional: Define behavior when the queue is full and max pool size is reached.
     // Default is AbortPolicy, which throws an exception. Other options include

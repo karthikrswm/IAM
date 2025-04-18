@@ -1,3 +1,4 @@
+// file: src/main/java/org/example/iam/dto/Oauth2ConfigDto.java
 // File: src/main/java/org/example/iam/dto/Oauth2ConfigDto.java
 package org.example.iam.dto;
 
@@ -59,9 +60,10 @@ public class Oauth2ConfigDto {
 
   // Use a separate field for inputting the secret during updates.
   // It's marked writeOnly so it doesn't appear in response schemas.
+  // Service layer will handle encrypting this before storing in the entity.
   @Schema(description = "The Client Secret obtained from the OAuth2 provider. Provide this only when creating or changing the secret. Leave blank/null if not updating the secret.",
           requiredMode = Schema.RequiredMode.NOT_REQUIRED, writeOnly = true, example = "GOCSPX-...", nullable = true)
-  private String clientSecretInput; // Input only field
+  private String clientSecretInput; // Input only field (plaintext)
 
   @URL(message = "Authorization URI must be a valid URL, if provided.")
   @Size(max = 1024, message = "Authorization URI cannot exceed 1024 characters.")
@@ -132,7 +134,7 @@ public class Oauth2ConfigDto {
 
   /**
    * Static factory method to create an Oauth2ConfigDto from an Oauth2Config entity.
-   * This method specifically excludes the sensitive {@code clientSecret} field from the resulting DTO.
+   * This method specifically excludes the sensitive {@code clientSecretEncrypted} field from the resulting DTO.
    * Handles null input gracefully.
    *
    * @param entity The {@link Oauth2Config} entity.
@@ -147,8 +149,7 @@ public class Oauth2ConfigDto {
             .organizationId(entity.getOrganization() != null ? entity.getOrganization().getId() : null)
             .provider(entity.getProvider())
             .clientId(entity.getClientId())
-            // DO NOT MAP clientSecret to the DTO for responses
-            // .clientSecretInput(null) // Input field is not relevant for response
+            // DO NOT MAP clientSecretEncrypted or clientSecretInput to the DTO for responses
             .authorizationUri(entity.getAuthorizationUri())
             .tokenUri(entity.getTokenUri())
             .userInfoUri(entity.getUserInfoUri())

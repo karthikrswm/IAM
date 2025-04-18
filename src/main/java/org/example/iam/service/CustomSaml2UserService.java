@@ -3,6 +3,7 @@ package org.example.iam.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.example.iam.constant.ApiErrorMessages; // Added import
 import org.example.iam.constant.LoginType; // Import LoginType
 import org.example.iam.entity.Organization;
 import org.example.iam.entity.SamlConfig;
@@ -90,7 +91,7 @@ public class CustomSaml2UserService {
     if (organizationId == null) {
       log.error("Could not extract Organization ID from SAML registrationId '{}'. Cannot provision user.", registrationId);
       // Throw an exception that the calling authentication component can handle
-      throw new ConfigurationException("SAML registration ID format is invalid or missing organization UUID: " + registrationId);
+      throw new ConfigurationException(ApiErrorMessages.CONFIGURATION_ERROR + " (Invalid SAML registration ID format: " + registrationId + ")"); // Use constant
     }
     log.debug("Extracted Organization ID '{}' from registrationId '{}'", organizationId, registrationId);
 
@@ -98,28 +99,30 @@ public class CustomSaml2UserService {
     // 2. Fetch associated Organization and its SAML Configuration
     Organization organization = organizationRepository.findById(organizationId)
             .orElseThrow(() -> {
-              log.error("Organization with ID '{}' not found for SAML registrationId '{}'.", organizationId, registrationId);
-              return new ResourceNotFoundException("Organization associated with this SAML login configuration was not found.");
+              String orgNotFoundMsg = String.format(ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID, organizationId); // Use constant
+              log.error(orgNotFoundMsg + " for SAML registrationId '{}'.", registrationId);
+              return new ResourceNotFoundException(orgNotFoundMsg); // Use constant message
             });
 
     // 3. Validate Organization and Config state
     if (organization.getLoginType() != LoginType.SAML) { // Use LoginType enum
       log.error("Organization '{}' (ID: {}) is not configured for SAML login (Type: {}). RegistrationId: {}",
               organization.getOrgName(), organizationId, organization.getLoginType(), registrationId);
-      throw new ConfigurationException("Organization '" + organization.getOrgName() + "' is not configured for SAML login.");
+      throw new ConfigurationException(ApiErrorMessages.OPERATION_NOT_ALLOWED + " (Organization not configured for SAML login)"); // Use constant
     }
 
     SamlConfig samlConfig = samlConfigRepository.findByOrganization(organization)
             .orElseThrow(() -> {
-              log.error("SAML configuration missing for Organization '{}' (ID: {}). RegistrationId: {}",
-                      organization.getOrgName(), organizationId, registrationId);
-              return new ConfigurationException("SAML configuration missing for organization '" + organization.getOrgName() + "'.");
+              String configMissingMsg = "SAML configuration missing for organization '" + organization.getOrgName() + "'.";
+              log.error(configMissingMsg + " (ID: {}). RegistrationId: {}",
+                      organizationId, registrationId);
+              return new ConfigurationException(ApiErrorMessages.CONFIGURATION_ERROR + " (" + configMissingMsg + ")"); // Use constant
             });
 
     if (!samlConfig.isEnabled()) {
       log.warn("SAML login attempt for Org '{}' (ID: {}) but the configuration is disabled. RegistrationId: {}",
               organization.getOrgName(), organizationId, registrationId);
-      throw new ConfigurationException("SAML login is currently disabled for this organization.");
+      throw new ConfigurationException(ApiErrorMessages.OPERATION_NOT_ALLOWED + " (SAML login is disabled for this organization)"); // Use constant
     }
     log.debug("Organization '{}' and SAML config validated successfully.", organization.getOrgName());
 
@@ -146,7 +149,7 @@ public class CustomSaml2UserService {
                 usernameAttributeName, registrationId, nameId);
       } else {
         // If NameID is also missing/blank, fall back to email prefix (less ideal but possible)
-        usernameSource = email;
+        usernameSource = email; // Email must exist at this point due to validation below
         log.warn("SAML username attribute ('{}') and NameID not found/blank for registrationId '{}'. Using email ('{}') as username source.",
                 usernameAttributeName, registrationId, email);
       }
@@ -154,15 +157,16 @@ public class CustomSaml2UserService {
 
     // --- Validation of extracted attributes ---
     if (email == null) {
-      log.error("Could not extract required email attribute ('{}') from SAML assertion for Org '{}'. NameID: '{}', Attributes: {}",
-              emailAttributeName, organization.getOrgName(), nameId, attributes);
-      throw new BadRequestException("Could not retrieve the required email attribute ('" + emailAttributeName + "') from the SAML assertion.");
+      String missingEmailMsg = "Could not retrieve the required email attribute ('" + emailAttributeName + "') from the SAML assertion.";
+      log.error(missingEmailMsg + " for Org '{}'. NameID: '{}', Attributes: {}",
+              organization.getOrgName(), nameId, attributes);
+      throw new BadRequestException(ApiErrorMessages.INVALID_INPUT + " (" + missingEmailMsg + ")"); // Use constant
     }
     if (usernameSource == null) {
       // This should only happen if email was also null, which is caught above.
-      log.error("Could not determine a source for username generation (checked attribute '{}', NameID, and email) for Org '{}'.",
-              usernameAttributeName, organization.getOrgName());
-      throw new BadRequestException("Unable to determine a user identifier from the SAML assertion.");
+      String missingUserSourceMsg = "Unable to determine a user identifier from the SAML assertion (checked NameID, attribute '" + usernameAttributeName + "', and email)";
+      log.error(missingUserSourceMsg + " for Org '{}'.", organization.getOrgName());
+      throw new BadRequestException(ApiErrorMessages.INVALID_INPUT + " (" + missingUserSourceMsg + ")"); // Use constant
     }
     log.debug("Extracted Email: '{}', Username Source: '{}' (from NameID/Attribute '{}')", email, usernameSource, usernameAttributeName != null ? usernameAttributeName : "NameID/Email Fallback");
 
@@ -195,7 +199,7 @@ public class CustomSaml2UserService {
       // Catch any other unexpected errors
       log.error("Unexpected error during SAML JIT provisioning for external email '{}' (Org: {}): {}", email, organizationId, e.getMessage(), e);
       // Wrap in a ConfigurationException or a SAML-specific exception if available/appropriate
-      throw new ConfigurationException("An unexpected error occurred during SAML user provisioning.", e);
+      throw new ConfigurationException(ApiErrorMessages.GENERAL_ERROR + " (SAML user provisioning)", e); // Use constant
     }
   }
 

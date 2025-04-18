@@ -4,7 +4,7 @@ package org.example.iam.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.iam.constant.ApiErrorMessages;
-import org.example.iam.constant.ApiResponseMessages; // For potential use, though not directly here
+import org.example.iam.constant.ApiResponseMessages;
 import org.example.iam.constant.AuditEventType;
 import org.example.iam.dto.*;
 import org.example.iam.entity.Organization; // Import Organization for helper method
@@ -56,16 +56,13 @@ public class AuthService {
   private final PasswordEncoder passwordEncoder;
   private final AuditEventService auditEventService;
   private final NotificationService notificationService;
-  // Use @Lazy to resolve circular dependency: AuthService -> UserService -> AuthService
-  // AuthService needs UserService for account status updates/checks.
-  // UserService might need AuthService to send verification tokens upon user creation.
-  private final @Lazy UserService userService;
+  private final @Lazy UserService userService; // Lazy inject UserService
 
   // --- Configuration Properties ---
   @Value("${security.verification.token.expire-minutes:1440}") // Default 24 hours
   private int verificationTokenExpirationMinutes;
 
-  @Value("${security.password-reset.token.expire-minutes:60}")   // Default 1 hour
+  @Value("${security.password-reset.token.expire-minutes:60}")    // Default 1 hour
   private int passwordResetTokenExpirationMinutes;
 
   /**
@@ -105,7 +102,6 @@ public class AuthService {
       // Check for temporary password AFTER successful authentication
       if (user.isTemporaryPassword()) {
         log.warn("User '{}' logged in successfully but requires mandatory password change (temporary password flag is set).", actorForAudit);
-        // Frontend should use the requiresPasswordChange flag in response to force change
       }
 
       // 3. Perform post-login updates (reset fail count, update last login) via UserService
@@ -122,67 +118,65 @@ public class AuthService {
               .organizationId(orgIdForAudit)
               .accessToken(jwt)
               .expiresAt(expiry)
-              .roles(user.getRoles().stream().map(r -> r.getRoleType().name()).collect(Collectors.toSet()))
-              .requiresPasswordChange(user.isTemporaryPassword()) // Include flag in response
+              .roles(user.getRoles().stream().map(r -> r.getRoleType().getRoleName()).collect(Collectors.toSet()))
+              .requiresPasswordChange(user.isTemporaryPassword())
               .build();
 
       // 6. Log success audit event
       auditEventService.logEvent(AuditEventType.LOGIN_SUCCESS,
               String.format("User '%s' logged in successfully", actorForAudit), actorForAudit,
-              "SUCCESS", // Status
-              "USER", user.getId().toString(), orgIdForAudit, // Target info
-              null); // Details
+              "SUCCESS",
+              "USER", user.getId().toString(), orgIdForAudit,
+              null);
       log.info("Login successful for user '{}'. JWT generated.", actorForAudit);
       return response;
 
     } catch (AuthenticationException e) {
       // --- Handle Specific Authentication Failures ---
-      // Find Org ID for logging context if possible
       orgIdForAudit = findOrgIdForUser(usernameOrEmail).orElse(null);
+      String failureReason;
 
-      // Handle failed login attempt counter/locking via UserService
       if (e instanceof BadCredentialsException) {
         log.warn("Login failed for '{}': Invalid credentials.", usernameOrEmail);
-        userService.handleFailedLoginAttempt(usernameOrEmail); // Increment counter / potentially lock
+        userService.handleFailedLoginAttempt(usernameOrEmail);
+        failureReason = ApiErrorMessages.BAD_CREDENTIALS;
         auditEventService.logFailureEvent(AuditEventType.LOGIN_FAILURE,
                 String.format("Login failed for '%s'", usernameOrEmail), actorForAudit,
-                "USER_CREDENTIALS", actorForAudit, orgIdForAudit, // Target info
-                ApiErrorMessages.BAD_CREDENTIALS); // Details
-        throw e; // Re-throw original exception (GlobalExceptionHandler maps to 401)
+                "USER_CREDENTIALS", actorForAudit, orgIdForAudit,
+                failureReason);
+        throw e;
       } else if (e instanceof LockedException) {
         log.warn("Login failed for '{}': Account locked.", usernameOrEmail);
-        // No need to call handleFailedLoginAttempt as account is already locked.
+        failureReason = ApiErrorMessages.ACCOUNT_LOCKED;
         auditEventService.logFailureEvent(AuditEventType.LOGIN_FAILURE,
                 String.format("Login failed for '%s'", usernameOrEmail), actorForAudit,
-                "USER_ACCOUNT", actorForAudit, orgIdForAudit, // Target info
-                ApiErrorMessages.ACCOUNT_LOCKED); // Details
-        // Throw a more specific exception for GlobalExceptionHandler to map to 403
-        throw new OperationNotAllowedException(ApiErrorMessages.ACCOUNT_LOCKED, e);
+                "USER_ACCOUNT", actorForAudit, orgIdForAudit,
+                failureReason);
+        throw new OperationNotAllowedException(failureReason, e);
       } else if (e instanceof DisabledException) {
         log.warn("Login failed for '{}': Account disabled.", usernameOrEmail);
+        failureReason = ApiErrorMessages.ACCOUNT_DISABLED;
         auditEventService.logFailureEvent(AuditEventType.LOGIN_FAILURE,
                 String.format("Login failed for '%s'", usernameOrEmail), actorForAudit,
-                "USER_ACCOUNT", actorForAudit, orgIdForAudit, // Target info
-                ApiErrorMessages.ACCOUNT_DISABLED); // Details
-        // Throw a more specific exception for GlobalExceptionHandler to map to 403
-        throw new OperationNotAllowedException(ApiErrorMessages.ACCOUNT_DISABLED, e);
+                "USER_ACCOUNT", actorForAudit, orgIdForAudit,
+                failureReason);
+        throw new OperationNotAllowedException(failureReason, e);
       } else if (e instanceof CredentialsExpiredException) {
-        // This might be thrown if UserDetailsChecker checks temporaryPassword flag
         log.warn("Login failed for '{}': Credentials expired (likely temporary password needs reset).", usernameOrEmail);
+        failureReason = ApiErrorMessages.TEMPORARY_PASSWORD_REQUIRES_RESET;
         auditEventService.logFailureEvent(AuditEventType.LOGIN_FAILURE,
                 String.format("Login failed for '%s'", usernameOrEmail), actorForAudit,
-                "USER_CREDENTIALS", actorForAudit, orgIdForAudit, // Target info
-                ApiErrorMessages.TEMPORARY_PASSWORD_REQUIRES_RESET); // Details
-        // Throw a more specific exception for GlobalExceptionHandler to map to 403/custom
-        throw new OperationNotAllowedException(ApiErrorMessages.TEMPORARY_PASSWORD_REQUIRES_RESET, e);
+                "USER_CREDENTIALS", actorForAudit, orgIdForAudit,
+                failureReason);
+        throw new OperationNotAllowedException(failureReason, e);
       } else {
-        // Catch other unexpected AuthenticationExceptions
-        log.error("Unexpected authentication error for '{}': {}", usernameOrEmail, e.getMessage());
+        failureReason = ApiErrorMessages.AUTHENTICATION_FAILED;
+        log.error("Unexpected authentication error for '{}': {}", usernameOrEmail, e.getMessage(), e);
         auditEventService.logFailureEvent(AuditEventType.LOGIN_FAILURE,
                 String.format("Login failed for '%s'", usernameOrEmail), actorForAudit,
-                "SYSTEM", actorForAudit, orgIdForAudit, // Target info
-                "Unknown authentication error: " + e.getMessage()); // Details
-        throw e; // Re-throw original exception
+                "SYSTEM", actorForAudit, orgIdForAudit,
+                "Unknown authentication error: " + e.getMessage());
+        throw e;
       }
     }
   }
@@ -191,7 +185,7 @@ public class AuthService {
    * Creates a new verification token for the given user, deletes any existing ones of the same type,
    * persists the new token, and triggers sending the verification email.
    *
-   * @param user             The user requiring verification.
+   * @param user              The user requiring verification.
    * @param temporaryPassword (Optional) The temporary password to include in the email (handle securely!).
    */
   @Transactional // Ensures token deletion and creation are atomic
@@ -341,13 +335,11 @@ public class AuthService {
     } else {
       // User not found - Log this event but do not inform the client
       log.warn("Password reset requested for non-existent email: {}. No email sent.", processedEmail);
-      // Log failure audit event without revealing user non-existence in description if possible
       auditEventService.logFailureEvent(AuditEventType.PASSWORD_RESET_REQUESTED,
               "Password reset requested for an email address not found in system.",
               processedEmail, // Actor is the email submitted
-              "Email address not found"); // Details
+              ApiErrorMessages.USER_NOT_FOUND_USERNAME);
     }
-    // Method returns void - success response is always sent by controller
   }
 
   /**
@@ -372,27 +364,23 @@ public class AuthService {
     UUID userId = user.getId();
     String username = user.getUsername();
     UUID userOrgId = user.getOrganization() != null ? user.getOrganization().getId() : null;
-    UUID tokenId = resetToken.getId(); // Get token ID for logging before deletion
+    UUID tokenId = resetToken.getId();
     log.debug("Password reset token validated successfully for user '{}' (Token ID: {})", username, tokenId);
 
-    // 2. Perform password policy checks (basic checks here, complexity via @Pattern or service)
-    // Match check is handled by @AssertTrue on ResetPasswordRequest DTO
-
-    // Check if new password is same as old password
+    // 2. Perform password policy checks
     if (passwordEncoder.matches(request.getNewPassword(), user.getPassword())) {
       log.warn("Password reset failed for user '{}': New password is the same as the old password.", username);
-      auditEventService.logFailureEvent(AuditEventType.PASSWORD_RESET_FAILURE, // Changed type
+      auditEventService.logFailureEvent(AuditEventType.PASSWORD_RESET_FAILURE,
               String.format("Password reset failed for user '%s'", username), username,
               "USER_CREDENTIALS", userId.toString(), userOrgId,
               "Attempted to set same password. Token ID: " + tokenId);
-      // Consider deleting token here if policy dictates one attempt per token
-      // tokenRepository.delete(resetToken);
-      throw new BadRequestException("New password cannot be the same as the current password.");
+      throw new BadRequestException(ApiErrorMessages.PASSWORD_MISMATCH);
     }
 
-    // 3. Update user password via UserService (or directly via repository method)
+    // 3. Update user password via UserService
     String newEncodedPassword = passwordEncoder.encode(request.getNewPassword());
-    userService.updatePasswordAndFlags(userId, newEncodedPassword); // Let UserService handle related flags and audit
+    // <<< CORRECTED Method Call: Pass username as actor for self-reset >>>
+    userService.updatePasswordAndFlags(userId, newEncodedPassword, username);
 
     // 4. Delete the used token
     tokenRepository.delete(resetToken);
@@ -420,8 +408,6 @@ public class AuthService {
 
     if (userOptional.isEmpty()) {
       log.warn("Resend verification requested for non-existent email: {}. No action taken.", processedEmail);
-      // Log audit event? Maybe not, to avoid confirming non-existence.
-      // auditEventService.logFailureEvent(AuditEventType.VERIFICATION_EMAIL_SENT, ...)
       return; // Exit silently
     }
 
@@ -429,22 +415,19 @@ public class AuthService {
 
     if (user.isEnabled()) {
       log.warn("Resend verification requested for already enabled user: '{}' (ID: {}).", user.getUsername(), user.getId());
-      auditEventService.logEvent(AuditEventType.VERIFICATION_EMAIL_SENT, // Log outcome of the *request*
+      auditEventService.logEvent(AuditEventType.VERIFICATION_EMAIL_SENT,
               "Resend verification requested but user already enabled",
-              processedEmail, // Actor is the requester (email provided)
+              processedEmail,
               "FAILURE",
-              "USER", user.getId().toString(), // Target user
+              "USER", user.getId().toString(),
               user.getOrganization() != null ? user.getOrganization().getId() : null,
               ApiErrorMessages.USER_ALREADY_ENABLED);
-      // Throw exception so controller can return appropriate error status (e.g., 403)
       throw new OperationNotAllowedException(ApiErrorMessages.USER_ALREADY_ENABLED);
     }
 
     log.info("Proceeding to resend verification email for user: '{}' (ID: {})", user.getUsername(), user.getId());
-    // Call method to generate and send a new token (this deletes old ones)
     // Pass null for temporary password as this isn't initial creation
     createAndSendVerificationToken(user, null);
-    // Audit log for successful *triggering* of resend is handled inside createAndSendVerificationToken
   }
 
 
@@ -466,29 +449,32 @@ public class AuthService {
     String tokenPrefix = tokenString.substring(0, Math.min(tokenString.length(), 8));
     log.debug("Validating token (Type: {}) with prefix: {}", expectedType, tokenPrefix);
 
+    final String invalidTokenMessage = (expectedType == VerificationToken.TokenType.EMAIL_VERIFICATION)
+            ? ApiErrorMessages.VERIFICATION_TOKEN_INVALID
+            : ApiErrorMessages.PASSWORD_RESET_TOKEN_INVALID;
+
+    final String expiredTokenMessage = (expectedType == VerificationToken.TokenType.EMAIL_VERIFICATION)
+            ? ApiErrorMessages.VERIFICATION_TOKEN_EXPIRED
+            : ApiErrorMessages.PASSWORD_RESET_TOKEN_EXPIRED;
+
+
     // 1. Find token by string
     VerificationToken token = tokenRepository.findByToken(tokenString).orElseThrow(() -> {
       log.warn("Token validation failed: Token string prefix '{}' not found.", tokenPrefix);
-      // Log audit failure (actor unknown at this stage, could be anonymous user or system)
       auditEventService.logFailureEvent(
-              AuditEventType.TOKEN_VALIDATION_FAILURE, // type
-              "Token validation failed (Not Found)", // description
-              "Unknown", // actor (can't determine from token)
-              "Token prefix: " + tokenPrefix + "..."); // details
-      return new InvalidTokenException(
-              expectedType == VerificationToken.TokenType.EMAIL_VERIFICATION
-                      ? ApiErrorMessages.VERIFICATION_TOKEN_INVALID
-                      : ApiErrorMessages.PASSWORD_RESET_TOKEN_INVALID
-      );
+              AuditEventType.TOKEN_VALIDATION_FAILURE,
+              "Token validation failed (Not Found)",
+              "Unknown",
+              "Token prefix: " + tokenPrefix + "...");
+      return new InvalidTokenException(invalidTokenMessage);
     });
 
     // Token found, extract context for logging
     UUID tokenId = token.getId();
-    User tokenUser = token.getUser(); // Should be loaded LAZYly if needed now
+    User tokenUser = token.getUser();
     String username = tokenUser != null ? tokenUser.getUsername() : "UNKNOWN_USER";
     UUID orgId = (tokenUser != null && tokenUser.getOrganization() != null)
             ? tokenUser.getOrganization().getId() : null;
-    String targetUserId = tokenUser != null ? tokenUser.getId().toString() : "N/A";
 
     // 2. Check Token Type
     if (token.getTokenType() != expectedType) {
@@ -496,15 +482,10 @@ public class AuthService {
               tokenId, username, expectedType, token.getTokenType());
       auditEventService.logFailureEvent(AuditEventType.TOKEN_VALIDATION_FAILURE,
               "Token validation failed (Wrong Type)", username,
-              "VERIFICATION_TOKEN", tokenId.toString(), orgId, // Target is the token
+              "VERIFICATION_TOKEN", tokenId.toString(), orgId,
               "Expected: " + expectedType + ", Actual: " + token.getTokenType());
-      // Delete the invalid token
       tokenRepository.delete(token);
-      throw new InvalidTokenException(
-              expectedType == VerificationToken.TokenType.EMAIL_VERIFICATION
-                      ? ApiErrorMessages.VERIFICATION_TOKEN_INVALID
-                      : ApiErrorMessages.PASSWORD_RESET_TOKEN_INVALID
-      );
+      throw new InvalidTokenException(invalidTokenMessage);
     }
 
     // 3. Check if Token Expired
@@ -513,28 +494,20 @@ public class AuthService {
               tokenId, username, token.getExpiryDate());
       auditEventService.logFailureEvent(AuditEventType.TOKEN_VALIDATION_FAILURE,
               "Token validation failed (Expired)", username,
-              "VERIFICATION_TOKEN", tokenId.toString(), orgId, // Target is the token
+              "VERIFICATION_TOKEN", tokenId.toString(), orgId,
               "Expiry: " + token.getExpiryDate());
-      // Delete the expired token
       tokenRepository.delete(token);
-      throw new TokenExpiredException(
-              expectedType == VerificationToken.TokenType.EMAIL_VERIFICATION
-                      ? ApiErrorMessages.VERIFICATION_TOKEN_EXPIRED
-                      : ApiErrorMessages.PASSWORD_RESET_TOKEN_EXPIRED
-      );
+      throw new TokenExpiredException(expiredTokenMessage);
     }
 
     // 4. Check Data Integrity (User should exist)
     if (tokenUser == null) {
-      // This indicates a serious data consistency problem (orphan token)
       log.error("CRITICAL: Data integrity error. Token ID '{}' exists but is not linked to a user.", tokenId);
       auditEventService.logFailureEvent(AuditEventType.TOKEN_VALIDATION_FAILURE,
               "Token validation failed (Orphaned Token - No User Link)", "SYSTEM",
-              "VERIFICATION_TOKEN", tokenId.toString(), null, // Org unknown
+              "VERIFICATION_TOKEN", tokenId.toString(), null,
               "Token has no associated user.");
-      // Delete the orphan token
       tokenRepository.delete(token);
-      // Throw a server error as this is unexpected internal state
       throw new ConfigurationException("Token integrity error: User link missing for token ID " + tokenId);
     }
 
@@ -552,11 +525,10 @@ public class AuthService {
    * Returns Optional.empty() if the user or their organization cannot be found.
    */
   private Optional<UUID> findOrgIdForUser(String usernameOrEmail) {
-    // Try finding by username first, then by email
     return userRepository.findByUsernameIgnoreCase(usernameOrEmail)
-            .or(() -> userRepository.findByPrimaryEmailIgnoreCase(usernameOrEmail)) // Chain with orElseGet
-            .map(User::getOrganization) // Map User to Organization
-            .filter(Objects::nonNull) // Ensure organization is not null
-            .map(Organization::getId); // Map Organization to its ID
+            .or(() -> userRepository.findByPrimaryEmailIgnoreCase(usernameOrEmail))
+            .map(User::getOrganization)
+            .filter(Objects::nonNull)
+            .map(Organization::getId);
   }
 }

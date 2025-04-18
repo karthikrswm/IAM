@@ -2,10 +2,11 @@
 package org.example.iam.config;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+// Correct import for the annotation
 import org.springframework.session.data.redis.config.annotation.web.http.EnableRedisHttpSession;
 import org.springframework.session.web.http.CookieSerializer;
 import org.springframework.session.web.http.DefaultCookieSerializer;
@@ -15,84 +16,93 @@ import org.springframework.session.web.http.HttpSessionIdResolver;
 /**
  * Configuration for managing HTTP sessions using Redis via Spring Session Data Redis.
  * <p>
- * While the primary authentication mechanism in this application is stateless JWT,
- * Redis-backed sessions can be useful for:
- * <ul>
- * <li>Managing state during external authentication flows like OAuth2 or SAML redirects.</li>
- * <li>Storing temporary user-specific data that doesn't fit well into JWT claims.</li>
- * <li>Supporting potential future features that might require server-side session state.</li>
- * </ul>
- * The {@link EnableRedisHttpSession @EnableRedisHttpSession} annotation enables the integration,
- * configuring session timeout and a Redis keyspace namespace.
+ * Configures Redis connection, session timeout, namespace, and session ID resolution strategy
+ * (Header-based by default in this configuration). Cookie-based options are also configured
+ * but commented out.
  * </p>
  */
 @Configuration
 // Enables Redis-backed HTTP Sessions.
-// - maxInactiveIntervalInSeconds: Sets the session timeout (e.g., 1800 = 30 minutes).
-// - redisNamespace: Creates a keyspace in Redis (e.g., "iam:session:") to avoid key collisions.
-@EnableRedisHttpSession(maxInactiveIntervalInSeconds = 1800, redisNamespace = "iam:session")
+// Reads timeout from 'spring.session.timeout' property (e.g., "30m", "1800s").
+// Reads namespace from 'spring.session.redis.namespace' property (e.g., "iam:session").
+// Defaults are handled by Spring Session if properties are not explicitly set.
+@EnableRedisHttpSession // Reads properties directly
 @Slf4j
 public class SessionConfig {
+
+  // Reference properties for logging purposes
+  @Value("${spring.session.timeout:30m}") // Reference property for logging/verification
+  private String sessionTimeout;
+
+  @Value("${spring.session.redis.namespace:iam:session}") // Reference property for logging/verification
+  private String redisNamespace;
+
 
   /**
    * Configures the connection factory for interacting with Redis.
    * <p>
-   * This implementation relies on Spring Boot's auto-configuration. It automatically reads
-   * Redis connection details (host, port, password, database index, SSL settings, etc.)
-   * from properties defined under the {@code spring.data.redis.*} prefix
-   * in {@code application.properties}. It uses Lettuce as the underlying Redis client library.
-   * </p>
-   * <p>
-   * For manual configuration (e.g., connecting to a specific Redis instance not defined
-   * in properties), you would create and configure a {@code RedisStandaloneConfiguration} or
-   * {@code RedisSentinelConfiguration} / {@code RedisClusterConfiguration} and pass it
-   * to the {@code LettuceConnectionFactory} constructor.
+   * Relies on Spring Boot's auto-configuration based on spring.data.redis.* properties.
    * </p>
    *
-   * @return A {@link LettuceConnectionFactory} bean configured based on application properties.
+   * @return A {@link LettuceConnectionFactory} bean.
    */
   @Bean
   public LettuceConnectionFactory redisConnectionFactory() {
     log.info("Configuring LettuceConnectionFactory for Redis sessions (using spring.data.redis.* properties).");
+    // Log the effective values read by @EnableRedisHttpSession (or defaults)
+    log.info("Spring Session Redis Namespace: '{}', Default Timeout: '{}'", redisNamespace, sessionTimeout);
     // Spring Boot auto-configures this bean based on properties.
-    // No manual configuration needed here if properties are set correctly.
     return new LettuceConnectionFactory();
   }
 
-  /*
-   * --- Optional Session ID Resolution Configuration ---
-   * By default, Spring Session uses cookies (typically named "SESSION") to track sessions.
-   * If you need to resolve the session ID from a header (e.g., for purely API-driven clients
-   * that don't handle cookies well), you can uncomment and configure the HttpSessionIdResolver bean.
-   * However, for standard web flows (like OAuth2/SAML redirects) and potential future browser-based
-   * interactions, cookie-based resolution is generally preferred.
+  /**
+   * Configures the strategy for resolving the session ID.
+   * Uses the 'X-Auth-Token' HTTP header by default.
+   * Comment out this bean to revert to the default Cookie-based resolution.
+   *
+   * @return An HttpSessionIdResolver instance configured for header-based resolution.
    */
-  // @Bean
-  // public HttpSessionIdResolver httpSessionIdResolver() {
-  //     log.info("Configuring HeaderHttpSessionIdResolver using 'X-Auth-Token' header for session ID resolution.");
-  //     // Example: Use the 'X-Auth-Token' header instead of cookies.
-  //     return HeaderHttpSessionIdResolver.xAuthToken();
-  //     // Alternative: Use a custom header name:
-  //     // return new HeaderHttpSessionIdResolver("X-Custom-Session-Id");
-  // }
+//  @Bean
+//  public HttpSessionIdResolver httpSessionIdResolver() {
+//    log.warn("Configuring HeaderHttpSessionIdResolver using 'X-Auth-Token' header for session ID resolution. " +
+//            "Clients must send the session ID in this header.");
+//    // Use the standard 'X-Auth-Token' header.
+//    return HeaderHttpSessionIdResolver.xAuthToken();
+//    // Alternative: Use a custom header name:
+//    // return new HeaderHttpSessionIdResolver("X-Custom-Session-Id");
+//  }
 
-  /*
-   * --- Optional Cookie Customization ---
-   * If using the default cookie-based session tracking, you can customize the cookie's
-   * properties (name, security flags, domain, path, SameSite attribute) by defining a
-   * CookieSerializer bean.
+  /**
+   * Configures custom properties for the session cookie if cookie-based resolution is used.
+   * This bean is defined but will only be used if the httpSessionIdResolver bean (above) is commented out.
+   *
+   * @return A configured CookieSerializer instance.
    */
-  // @Bean
-  // public CookieSerializer cookieSerializer() {
-  //     log.info("Configuring custom DefaultCookieSerializer for session cookies.");
-  //     DefaultCookieSerializer serializer = new DefaultCookieSerializer();
-  //     serializer.setCookieName("IAMSESSID"); // Custom cookie name
-  //     serializer.setUseHttpOnlyCookie(true);  // Recommended for security (prevents client-side script access)
-  //     serializer.setUseSecureCookie(true);    // Recommended for production (requires HTTPS)
-  //     serializer.setSameSite("Strict");      // Recommended ('Strict' or 'Lax') to mitigate CSRF
-  //     // serializer.setDomainName("example.com"); // Set cookie domain if needed
-  //     // serializer.setCookiePath("/");           // Set cookie path if needed
-  //     return serializer;
-  // }
+  @Bean
+  public CookieSerializer cookieSerializer() {
+    log.info("Defining custom DefaultCookieSerializer bean (will be used ONLY if HeaderHttpSessionIdResolver is disabled).");
+    DefaultCookieSerializer serializer = new DefaultCookieSerializer();
+    // NOTE: These settings only apply if HeaderHttpSessionIdResolver is NOT active.
+    String cookieName = "IAMSESSID"; // Define name locally for logging
+    String sameSite = "Lax";       // Define setting locally for logging
+    boolean useSecure = false;     // Define setting locally for logging (SET TO true FOR PROD HTTPS)
+    boolean useHttpOnly = true;    // Define setting locally for logging
+
+    serializer.setCookieName(cookieName);
+    serializer.setUseHttpOnlyCookie(useHttpOnly);
+    serializer.setUseSecureCookie(useSecure);
+    serializer.setSameSite(sameSite);
+    // serializer.setDomainName("example.com");
+    serializer.setCookiePath("/");
+
+    // Corrected logging - Log the values we *set* or intend to set
+    log.debug("Custom cookie serializer defined: Name={}, HttpOnly={}, Secure={}, SameSite={}",
+            cookieName,
+            useHttpOnly,
+            useSecure, // Log the boolean value directly
+            sameSite
+    );
+    return serializer;
+  }
 
 }

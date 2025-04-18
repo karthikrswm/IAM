@@ -60,8 +60,8 @@ public class ConfigController {
   @Operation(summary = "Get SAML Configuration",
           description = "Retrieves the SAML 2.0 IdP configuration for the specified organization. Requires SUPER role or membership (ADMIN/USER) in the organization.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_CONFIG_RETRIEVED_SUCCESS,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_CONFIG_RETRIEVED_SUCCESS, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "403", description = ApiErrorMessages.ACCESS_DENIED,
@@ -84,7 +84,7 @@ public class ConfigController {
 
     SamlConfigDto configDto = configService.getSamlConfig(orgId, actorUsername, actorOrgId, actorRoles);
 
-    ApiSuccessResponse<SamlConfigDto> response = ApiSuccessResponse.ok(configDto, ApiResponseMessages.ORG_CONFIG_RETRIEVED_SUCCESS);
+    ApiSuccessResponse<SamlConfigDto> response = ApiSuccessResponse.ok(configDto, ApiResponseMessages.ORG_CONFIG_RETRIEVED_SUCCESS); // Use constant
     return ResponseEntity.ok(response);
   }
 
@@ -100,8 +100,8 @@ public class ConfigController {
   @Operation(summary = "Update SAML Configuration",
           description = "Creates or updates the SAML 2.0 IdP configuration for the specified organization. Requires SUPER role or ADMIN role of the organization.")
   @ApiResponses(value = {
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_SAML_CONFIG_UPDATED,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_SAML_CONFIG_UPDATED, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "400", description = ApiErrorMessages.INVALID_INPUT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
@@ -129,7 +129,7 @@ public class ConfigController {
     SamlConfigDto updatedConfig = configService.saveOrUpdateSamlConfig(orgId, samlConfigDto,
             actorUsername, actorOrgId, actorRoles);
 
-    ApiSuccessResponse<SamlConfigDto> response = ApiSuccessResponse.ok(updatedConfig, ApiResponseMessages.ORG_SAML_CONFIG_UPDATED);
+    ApiSuccessResponse<SamlConfigDto> response = ApiSuccessResponse.ok(updatedConfig, ApiResponseMessages.ORG_SAML_CONFIG_UPDATED); // Use constant
     return ResponseEntity.ok(response);
   }
 
@@ -146,8 +146,8 @@ public class ConfigController {
   @Operation(summary = "Get OAuth2 Configuration",
           description = "Retrieves the OAuth 2.0 client configuration for the specified organization. Requires SUPER role or membership (ADMIN/USER) in the organization.")
   @ApiResponses(value = { // Similar responses as GET /saml
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_CONFIG_RETRIEVED_SUCCESS,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_CONFIG_RETRIEVED_SUCCESS, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "403", description = ApiErrorMessages.ACCESS_DENIED,
@@ -168,7 +168,7 @@ public class ConfigController {
 
     Oauth2ConfigDto configDto = configService.getOauth2Config(orgId, actorUsername, actorOrgId, actorRoles);
 
-    ApiSuccessResponse<Oauth2ConfigDto> response = ApiSuccessResponse.ok(configDto, ApiResponseMessages.ORG_CONFIG_RETRIEVED_SUCCESS);
+    ApiSuccessResponse<Oauth2ConfigDto> response = ApiSuccessResponse.ok(configDto, ApiResponseMessages.ORG_CONFIG_RETRIEVED_SUCCESS); // Use constant
     return ResponseEntity.ok(response);
   }
 
@@ -184,8 +184,8 @@ public class ConfigController {
   @Operation(summary = "Update OAuth2 Configuration",
           description = "Creates or updates the OAuth 2.0 client configuration for the specified organization. Requires SUPER role or ADMIN role of the organization.")
   @ApiResponses(value = { // Similar responses as PUT /saml
-          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_OAUTH2_CONFIG_UPDATED,
-                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiResponse.class))),
+          @ApiResponse(responseCode = "200", description = ApiResponseMessages.ORG_OAUTH2_CONFIG_UPDATED, // Use constant
+                  content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiSuccessResponse.class))), // Use ApiSuccessResponse
           @ApiResponse(responseCode = "400", description = ApiErrorMessages.INVALID_INPUT,
                   content = @Content(mediaType = "application/json", schema = @Schema(implementation = ApiError.class))),
           @ApiResponse(responseCode = "401", description = ApiErrorMessages.INVALID_JWT,
@@ -211,7 +211,7 @@ public class ConfigController {
     Oauth2ConfigDto updatedConfig = configService.saveOrUpdateOauth2Config(orgId, oauth2ConfigDto,
             actorUsername, actorOrgId, actorRoles);
 
-    ApiSuccessResponse<Oauth2ConfigDto> response = ApiSuccessResponse.ok(updatedConfig, ApiResponseMessages.ORG_OAUTH2_CONFIG_UPDATED);
+    ApiSuccessResponse<Oauth2ConfigDto> response = ApiSuccessResponse.ok(updatedConfig, ApiResponseMessages.ORG_OAUTH2_CONFIG_UPDATED); // Use constant
     return ResponseEntity.ok(response);
   }
 }

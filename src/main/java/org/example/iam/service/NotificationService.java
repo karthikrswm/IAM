@@ -3,8 +3,10 @@ package org.example.iam.service;
 
 import org.example.iam.entity.User;
 
+import java.util.List; // <<< ADDED import
+
 /**
- * Interface defining the contract for sending various notifications to users.
+ * Interface defining the contract for sending various notifications to users and administrators.
  * <p>
  * This decouples the notification mechanism (e.g., email, SMS, push notification)
  * from the core business logic services (like {@link AuthService} or {@link UserService})
@@ -59,6 +61,30 @@ public interface NotificationService {
    * @param user The user whose account was locked.
    */
   void sendAccountLockedEmail(User user);
+
+  /**
+   * Sends a warning notification to the user that their password will expire soon.
+   *
+   * @param user            The user whose password is about to expire.
+   * @param daysUntilExpiry The number of days remaining until the password expires.
+   */
+  void sendPasswordExpiryWarningEmail(User user, long daysUntilExpiry); // <<< ADDED Method
+
+  /**
+   * Sends a notification to the user that their password has expired.
+   *
+   * @param user The user whose password has expired.
+   */
+  void sendPasswordExpiredEmail(User user); // <<< ADDED Method
+
+  /**
+   * Sends a notification to the administrators of an organization that a user's password has expired.
+   *
+   * @param expiredUser The user whose password has expired.
+   * @param orgAdmins   A list of User entities representing the administrators of the organization.
+   */
+  void sendAdminPasswordExpiredNotification(User expiredUser, List<User> orgAdmins); // <<< ADDED Method
+
 
   // Add other notification methods as needed, for example:
   // void sendAccountUnlockedEmail(User user);

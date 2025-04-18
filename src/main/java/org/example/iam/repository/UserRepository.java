@@ -2,6 +2,7 @@
 package org.example.iam.repository;
 
 import org.example.iam.entity.Organization;
+import org.example.iam.entity.Role; // <<< ADDED Import
 import org.example.iam.entity.User;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -15,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional; // Often needed
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set; // <<< ADDED Import
 import java.util.UUID;
 
 /**
@@ -88,6 +90,16 @@ public interface UserRepository extends JpaRepository<User, UUID> { // Primary k
    * @return A {@link Page} of {@link User} entities belonging to the organization.
    */
   Page<User> findByOrganizationId(UUID organizationId, Pageable pageable);
+
+  /**
+   * Finds a list of users belonging to a specific organization and having a specific role.
+   * Used to find administrators of an organization for notifications.
+   *
+   * @param organizationId The UUID of the organization.
+   * @param role           The Role entity representing the role to filter by (e.g., ADMIN role).
+   * @return A list of {@link User} entities matching the criteria.
+   */
+  List<User> findByOrganizationIdAndRolesContains(UUID organizationId, Role role); // <<< ADDED Method
 
   // --- Account Status Management Methods (Modifying Queries) ---
 
@@ -183,6 +195,19 @@ public interface UserRepository extends JpaRepository<User, UUID> { // Primary k
   List<User> findUsersWithExpiringCredentials(@Param("expirationThresholdDate") Instant expirationThresholdDate);
 
   /**
+   * Finds users whose credentials are not expired, who are enabled,
+   * and whose password change date falls within the warning window (between warningDate and expiryDate).
+   * Used by the password expiry warning scheduler.
+   *
+   * @param warningDate The start of the warning window (exclusive).
+   * @param expiryDate  The actual expiry date (inclusive).
+   * @return A list of {@link User} entities needing a password expiry warning.
+   */
+  @Query("SELECT u FROM User u WHERE u.credentialsNonExpired = true AND u.enabled = true AND u.passwordChangedDate > :warningDate AND u.passwordChangedDate <= :expiryDate") //<<< ADDED Method
+  List<User> findUsersWithCredentialsExpiringSoon(@Param("warningDate") Instant warningDate, @Param("expiryDate") Instant expiryDate);
+
+
+  /**
    * Updates the {@code credentialsNonExpired} status for a specific user identified by UUID.
    * Used by the password expiration scheduler.
    * Intended to be called within a transaction.
@@ -213,9 +238,9 @@ public interface UserRepository extends JpaRepository<User, UUID> { // Primary k
    * Used during password reset or initial password change flows.
    * Intended to be called within a transaction.
    *
-   * @param userId            The UUID of the user whose password is being updated.
-   * @param encodedPassword   The new, securely hashed password.
-   * @param changeDate        The timestamp when the password change occurred.
+   * @param userId          The UUID of the user whose password is being updated.
+   * @param encodedPassword The new, securely hashed password.
+   * @param changeDate      The timestamp when the password change occurred.
    */
   @Modifying
   @Query("UPDATE User u SET u.password = :password, u.temporaryPassword = false, u.passwordChangedDate = :changeDate, u.credentialsNonExpired = true WHERE u.id = :userId")

@@ -9,6 +9,8 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails; // Interface for Spring Security
 
+import java.io.Serial;
+import java.io.Serializable;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.HashSet;
@@ -50,8 +52,10 @@ import java.util.stream.Collectors;
 @Builder(toBuilder = true) // Allows copying and modifying using builder pattern
 // Include ID for equality checks, call super for Auditable fields' equality
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
-public class User extends Auditable<String> implements UserDetails { // Implement UserDetails
+public class User extends Auditable<String> implements UserDetails, Serializable { // Implement UserDetails
 
+  @Serial // Requires Java 14+
+  private static final long serialVersionUID = 3L; // Basic version UID
   /**
    * Primary key (UUID) for the user account.
    */

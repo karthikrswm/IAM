@@ -16,11 +16,16 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.authentication.DisabledException;
 import org.springframework.security.authentication.LockedException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException; // <<< ADDED Import
+import org.springframework.security.oauth2.core.OAuth2Error; // <<< ADDED Import
+//import org.springframework.security.saml2.core.Saml2Exception;
+import org.springframework.security.saml2.Saml2Exception;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
@@ -40,8 +45,8 @@ import java.util.stream.Collectors;
  * <p>
  * Intercepts exceptions thrown from controllers or filters (if delegated) and maps them
  * to a standardized {@link ApiError} JSON response. It handles custom application exceptions,
- * Spring Security exceptions, standard Spring MVC/validation exceptions, and provides a
- * catch-all for unexpected errors.
+ * Spring Security exceptions (including specific OAuth2/SAML handling), standard Spring
+ * MVC/validation exceptions, and provides a catch-all for unexpected errors.
  * </p>
  * <p>
  * Extends {@link ResponseEntityExceptionHandler} to leverage its built-in handling for common
@@ -58,7 +63,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
   // private final ObjectMapper objectMapper; // Inject if needed for custom serialization
 
   // --- Custom Application Exception Handlers ---
-
+  // ... (handleResourceNotFound, handleBadRequest, etc. remain the same) ...
   @ExceptionHandler(ResourceNotFoundException.class)
   public ResponseEntity<ApiError> handleResourceNotFound(ResourceNotFoundException ex, WebRequest request) {
     String path = getPath(request);
@@ -96,19 +101,17 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
   public ResponseEntity<ApiError> handleConfigurationError(ConfigurationException ex, WebRequest request) {
     String path = getPath(request);
     log.error("Internal configuration error affecting path [{}]: {}", path, ex.getMessage(), ex);
-    // Return a generic message to the client for internal config errors
     ApiError apiError = new ApiError(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorMessages.CONFIGURATION_ERROR, path);
     return new ResponseEntity<>(apiError, HttpStatus.INTERNAL_SERVER_ERROR);
   }
 
-  // --- Token Specific Exception Handlers ---
 
+  // --- Token Specific Exception Handlers ---
+  // ... (handleInvalidToken, handleTokenExpired remain the same) ...
   @ExceptionHandler(InvalidTokenException.class)
   public ResponseEntity<ApiError> handleInvalidToken(InvalidTokenException ex, WebRequest request) {
     String path = getPath(request);
-    // Specific logging for invalid tokens might have occurred closer to validation point (e.g., JwtUtils or AuthService)
     log.warn("Processing failed due to invalid token at path [{}]: {}", path, ex.getMessage());
-    // Return 400 Bad Request as the token provided by the client was invalid (format, signature, not found, wrong type)
     ApiError apiError = new ApiError(HttpStatus.BAD_REQUEST, ex.getMessage(), path);
     return new ResponseEntity<>(apiError, HttpStatus.BAD_REQUEST);
   }
@@ -116,45 +119,75 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
   @ExceptionHandler(TokenExpiredException.class)
   public ResponseEntity<ApiError> handleTokenExpired(TokenExpiredException ex, WebRequest request) {
     String path = getPath(request);
-    // Specific logging for expired tokens might have occurred closer to validation point
     log.warn("Processing failed due to expired token at path [{}]: {}", path, ex.getMessage());
-    // Return 410 Gone as the token *was* valid but is now expired.
     ApiError apiError = new ApiError(HttpStatus.GONE, ex.getMessage(), path);
     return new ResponseEntity<>(apiError, HttpStatus.GONE);
   }
 
   // --- Spring Security Exception Handlers ---
 
-  // Note: These handlers act as a fallback or catch exceptions potentially thrown outside
-  // the standard filter chain security points. The custom JwtAuthenticationEntryPoint and
-  // CustomAccessDeniedHandler configured in SecurityConfig will likely handle most
-  // 401/403 errors originating directly from the security filters first.
-
+  // Note: AuthenticationException handler covers exceptions from AuthenticationManager/Providers
   @ExceptionHandler({AuthenticationException.class})
   public ResponseEntity<ApiError> handleAuthenticationException(AuthenticationException ex, WebRequest request) {
+    // Specific handling for OAuth2AuthenticationException is added below.
+    // This handler now acts as a fallback for *other* AuthenticationExceptions.
     String path = getPath(request);
     log.warn("Authentication failure intercepted by GlobalExceptionHandler for path [{}]: {}", path, ex.getMessage());
-    // Determine more specific message based on exception type
     HttpStatus status = HttpStatus.UNAUTHORIZED; // Default 401
     String message;
     if (ex instanceof BadCredentialsException) {
       message = ApiErrorMessages.BAD_CREDENTIALS;
     } else if (ex instanceof LockedException) {
       message = ApiErrorMessages.ACCOUNT_LOCKED;
-      status = HttpStatus.FORBIDDEN; // Or keep 401, depends on desired UX
+      status = HttpStatus.FORBIDDEN; // 403 better indicates status issue vs just bad creds
     } else if (ex instanceof DisabledException) {
       message = ApiErrorMessages.ACCOUNT_DISABLED;
-      status = HttpStatus.FORBIDDEN; // Or keep 401
+      status = HttpStatus.FORBIDDEN; // 403 better indicates status issue
     } else if (ex instanceof CredentialsExpiredException) {
       message = ApiErrorMessages.CREDENTIALS_EXPIRED;
+    } else if (ex instanceof AuthenticationServiceException) {
+      log.error("Authentication service error processing request path [{}]: {}", path, ex.getMessage(), ex.getCause());
+      message = ApiErrorMessages.GENERAL_ERROR + " (Authentication Processing Error)";
+      status = HttpStatus.INTERNAL_SERVER_ERROR;
     } else {
-      // Generic message for other AuthenticationExceptions (e.g., from custom providers)
-      message = ApiErrorMessages.AUTHENTICATION_FAILED;
+      message = ApiErrorMessages.AUTHENTICATION_FAILED; // Generic fallback
     }
     ApiError apiError = new ApiError(status, message, path);
     return new ResponseEntity<>(apiError, status);
   }
 
+  // Handles specific OAuth2 Authentication errors
+  @ExceptionHandler({OAuth2AuthenticationException.class}) // <<< ADDED Specific Handler
+  public ResponseEntity<ApiError> handleOAuth2AuthenticationException(OAuth2AuthenticationException ex, WebRequest request) {
+    String path = getPath(request);
+    OAuth2Error error = ex.getError();
+    String errorCode = error.getErrorCode();
+    String errorDescription = error.getDescription(); // Use description from OAuth2Error
+    if (errorDescription == null || errorDescription.isBlank()) {
+      errorDescription = ex.getMessage(); // Fallback to exception message
+    }
+
+    log.warn("OAuth2 Authentication failure for path [{}]: Code='{}', Description='{}'", path, errorCode, errorDescription, ex);
+
+    HttpStatus status = HttpStatus.UNAUTHORIZED; // Default 401 for OAuth2 errors
+//     Can map specific OAuth2 error codes to different HTTP statuses if needed
+     switch (errorCode) {
+         case "invalid_request": status = HttpStatus.BAD_REQUEST; break;
+         case "unauthorized_client": status = HttpStatus.UNAUTHORIZED; break;
+         case "access_denied": status = HttpStatus.FORBIDDEN; break;
+         case "server_error": status = HttpStatus.INTERNAL_SERVER_ERROR; break;
+         // Handle custom error codes from CustomOAuth2UserService if needed
+         case "user_provisioning_error": status = HttpStatus.INTERNAL_SERVER_ERROR; break; // Or maybe 400?
+         case "login_type_mismatch": status = HttpStatus.BAD_REQUEST; break; // Or 403?
+         case "organization_not_found": status = HttpStatus.NOT_FOUND; break; // Or 400?
+     }
+
+    // Use the description from the OAuth2Error object as the primary message
+    ApiError apiError = new ApiError(status, errorDescription, path);
+    return new ResponseEntity<>(apiError, status);
+  }
+
+  // Handles authorization failures (@PreAuthorize, missing roles etc)
   @ExceptionHandler({AccessDeniedException.class})
   public ResponseEntity<ApiError> handleAccessDenied(AccessDeniedException ex, WebRequest request) {
     String path = getPath(request);
@@ -164,8 +197,18 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     return new ResponseEntity<>(apiError, HttpStatus.FORBIDDEN);
   }
 
-  // --- Standard Spring Boot Validation/Request Exception Handlers (Overrides from ResponseEntityExceptionHandler) ---
+  // Handler for general SAML2 exceptions that might not be caught elsewhere
+  @ExceptionHandler({Saml2Exception.class})
+  public ResponseEntity<ApiError> handleSaml2Exception(Saml2Exception ex, WebRequest request) {
+    String path = getPath(request);
+    log.error("SAML processing error for path [{}]: {}", path, ex.getMessage(), ex);
+    ApiError apiError = new ApiError(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorMessages.GENERAL_ERROR + " (SAML Processing Error)", path);
+    return new ResponseEntity<>(apiError, HttpStatus.INTERNAL_SERVER_ERROR);
+  }
 
+
+  // --- Standard Spring Boot Validation/Request Exception Handlers (Overrides from ResponseEntityExceptionHandler) ---
+  // ... (handleMethodArgumentNotValid, handleConstraintViolation, etc. remain the same) ...
   @Override
   protected ResponseEntity<Object> handleMethodArgumentNotValid(
           MethodArgumentNotValidException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
@@ -181,12 +224,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     return new ResponseEntity<>(apiError, headers, status);
   }
 
-  @ExceptionHandler(ConstraintViolationException.class) // Handles validation on path variables, request params etc.
+  @ExceptionHandler(ConstraintViolationException.class)
   public ResponseEntity<ApiError> handleConstraintViolation(ConstraintViolationException ex, WebRequest request) {
     Map<String, String> errors = ex.getConstraintViolations().stream()
             .collect(Collectors.toMap(
-                    violation -> violation.getPropertyPath().toString(), // Extracts field name
-                    ConstraintViolation::getMessage // Extracts validation message
+                    violation -> violation.getPropertyPath().toString(),
+                    ConstraintViolation::getMessage
             ));
     String path = getPath(request);
     log.warn("Constraint violation for path [{}]: {}", path, errors);
@@ -203,12 +246,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     return new ResponseEntity<>(apiError, headers, status);
   }
 
-  @ExceptionHandler(MethodArgumentTypeMismatchException.class) // Handles wrong type for path variable/request param
+  @ExceptionHandler(MethodArgumentTypeMismatchException.class)
   public ResponseEntity<ApiError> handleMethodArgumentTypeMismatch(
           MethodArgumentTypeMismatchException ex, WebRequest request) {
     String requiredType = ex.getRequiredType() != null ? ex.getRequiredType().getSimpleName() : "Unknown";
-    String message = String.format("Parameter '%s' should be of type '%s'. Value '%s' is invalid.",
-            ex.getName(), requiredType, ex.getValue());
+    String message = String.format("Invalid parameter type for '%s'. Expected '%s'.", ex.getName(), requiredType);
     String path = getPath(request);
     log.warn("Method argument type mismatch for path [{}]: {}", path, message);
     ApiError apiError = new ApiError(HttpStatus.BAD_REQUEST, message, path);
@@ -218,8 +260,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
   @Override
   protected ResponseEntity<Object> handleMissingServletRequestParameter(
           MissingServletRequestParameterException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
-    String message = String.format("Required request parameter '%s' of type '%s' is missing.",
-            ex.getParameterName(), ex.getParameterType());
+    String message = String.format("Required parameter '%s' is missing.", ex.getParameterName());
     String path = getPath(request);
     log.warn("Missing request parameter for path [{}]: {}", path, message);
     ApiError apiError = new ApiError((HttpStatus) status, message, path);
@@ -228,13 +269,10 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
 
   // --- Generic Catch-All Exception Handler ---
-  // This should be the last handler to catch any exceptions not explicitly handled above.
   @ExceptionHandler(Exception.class)
   public ResponseEntity<ApiError> handleAllOtherExceptions(Exception ex, WebRequest request) {
     String path = getPath(request);
-    // Log unexpected errors at ERROR level with stack trace
     log.error("An unexpected error occurred processing request path [{}]: {}", path, ex.getMessage(), ex);
-    // Return a generic 500 error response to the client
     ApiError apiError = new ApiError(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorMessages.GENERAL_ERROR, path);
     return new ResponseEntity<>(apiError, HttpStatus.INTERNAL_SERVER_ERROR);
   }
@@ -243,15 +281,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
   // --- Helper Method to Extract Request Path ---
   private String getPath(WebRequest request) {
     try {
-      // Try to get the servlet request URI
       if (request instanceof ServletWebRequest servletWebRequest) {
         return servletWebRequest.getRequest().getRequestURI();
       }
     } catch (Exception e) {
-      // Log error if path extraction fails, but don't let it fail the handler
       log.error("Error extracting request path from WebRequest", e);
     }
-    // Fallback if path cannot be determined
     return "Unknown path";
   }
 }
