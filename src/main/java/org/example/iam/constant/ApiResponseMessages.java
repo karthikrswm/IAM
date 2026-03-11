@@ -16,6 +16,7 @@ public final class ApiResponseMessages {
   // --- Authentication & Verification ---
   public static final String SIGNUP_SUCCESS = "User registered successfully. Please check your primary email for a verification link."; // Used if self-signup were enabled
   public static final String LOGIN_SUCCESSFUL = "Login successful.";
+  public static final String LOGOUT_SUCCESS = "Logout successful."; // <<< ADDED
   public static final String VERIFICATION_SUCCESSFUL = "Account verified and enabled successfully.";
   public static final String PASSWORD_RESET_REQUEST_SUCCESS = "If an account with the provided email exists, a password reset link has been sent."; // Generic message for security
   public static final String PASSWORD_RESET_SUCCESS = "Password has been reset successfully.";

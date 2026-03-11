@@ -47,8 +47,7 @@ public class Organization extends Auditable<String> implements Serializable { //
    * Primary key (UUID) for the organization.
    */
   @Id
-  @GeneratedValue(generator = "UUID")
-  @GenericGenerator(name = "UUID", strategy = "org.hibernate.id.UUIDGenerator")
+  @GeneratedValue(strategy = GenerationType.UUID)
   @Column(name = "id", updatable = false, nullable = false, columnDefinition = "BINARY(16)")
   @EqualsAndHashCode.Include // Use ID for equality checks
   private UUID id;

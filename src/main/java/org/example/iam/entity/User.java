@@ -60,8 +60,7 @@ public class User extends Auditable<String> implements UserDetails, Serializable
    * Primary key (UUID) for the user account.
    */
   @Id
-  @GeneratedValue(generator = "UUID")
-  @GenericGenerator(name = "UUID", strategy = "org.hibernate.id.UUIDGenerator")
+  @GeneratedValue(strategy = GenerationType.UUID)
   @Column(name = "id", updatable = false, nullable = false, columnDefinition = "BINARY(16)")
   @EqualsAndHashCode.Include // Use ID for equality checks
   private UUID id;
@@ -276,18 +275,7 @@ public class User extends Auditable<String> implements UserDetails, Serializable
    */
   @Override
   public String toString() {
-    return "User{" +
-            "id=" + id +
-            ", username='" + username + '\'' +
-            ", primaryEmail='" + primaryEmail + '\'' +
-            ", organizationId=" + (organization != null ? organization.getId() : "null") +
-            // Collect role names instead of full Role objects
-            ", roles=" + (roles != null ? roles.stream().map(Role::getName).collect(Collectors.joining(", ")) : "[]") +
-            ", enabled=" + enabled +
-            ", accountNonLocked=" + accountNonLocked +
-            ", credentialsNonExpired=" + credentialsNonExpired +
-            ", createdBy='" + createdBy + '\'' +
-            ", createdDate=" + createdDate +
-            '}';
+      // Collect role names instead of full Role objects
+      return STR."User{id=\{id}, username='\{username}', primaryEmail='\{primaryEmail}', organizationId=\{organization != null ? organization.getId() : "null"}, roles=\{roles != null ? roles.stream().map(Role::getName).collect(Collectors.joining(", ")) : "[]"}, enabled=\{enabled}, accountNonLocked=\{accountNonLocked}, credentialsNonExpired=\{credentialsNonExpired}, createdBy='\{createdBy}', createdDate=\{createdDate}}";
   }
 }

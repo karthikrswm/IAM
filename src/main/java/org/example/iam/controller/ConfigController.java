@@ -21,6 +21,7 @@ import org.example.iam.dto.Oauth2ConfigDto;
 import org.example.iam.dto.SamlConfigDto;
 import org.example.iam.security.SecurityUtils;
 import org.example.iam.service.ConfigService;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -132,6 +133,43 @@ public class ConfigController {
     ApiSuccessResponse<SamlConfigDto> response = ApiSuccessResponse.ok(updatedConfig, ApiResponseMessages.ORG_SAML_CONFIG_UPDATED); // Use constant
     return ResponseEntity.ok(response);
   }
+
+  /**
+   * Generates and returns the SAML 2.0 Service Provider metadata XML for the organization.
+   * Requires SUPER role or ADMIN role of the specified organization.
+   *
+   * @param orgId UUID of the organization.
+   * @return ResponseEntity containing the metadata XML string or ApiError.
+   */
+  @Operation(summary = "Get SAML SP Metadata", // <<< ADDED Endpoint
+          description = "Generates and returns the SAML 2.0 Service Provider metadata XML document...")
+  @ApiResponses(value = {
+          @ApiResponse(responseCode = "200", description = "SAML SP Metadata XML generated successfully",
+                  content = @Content(mediaType = "application/samlmetadata+xml", schema = @Schema(type = "string", format = "xml"))),
+          @ApiResponse(responseCode = "401", description = ApiErrorMessages.AUTHENTICATION_FAILED, content = @Content(schema = @Schema(implementation = ApiError.class))),
+          @ApiResponse(responseCode = "403", description = ApiErrorMessages.ACCESS_DENIED, content = @Content(schema = @Schema(implementation = ApiError.class))),
+          @ApiResponse(responseCode = "404", description = ApiErrorMessages.ORGANIZATION_NOT_FOUND_ID + " or SAML config not found/disabled", content = @Content(schema = @Schema(implementation = ApiError.class))),
+          @ApiResponse(responseCode = "500", description = ApiErrorMessages.CONFIGURATION_ERROR + " (Metadata generation failed)", content = @Content(schema = @Schema(implementation = ApiError.class)))
+  })
+  @GetMapping(value = "/saml/metadata", produces = {"application/samlmetadata+xml", MediaType.APPLICATION_JSON_VALUE})
+  @PreAuthorize("hasAnyRole('SUPER', 'ADMIN')")
+  public ResponseEntity<String> getSpMetadata(
+          @Parameter(description = "UUID of the organization", required = true) @PathVariable UUID orgId) {
+
+    String actorUsername = SecurityUtils.getCurrentUsername().orElse("UnknownActor");
+    UUID actorOrgId = SecurityUtils.getCurrentOrgId().orElse(null);
+    Set<RoleType> actorRoles = SecurityUtils.getCurrentUserRoles();
+    log.info("Actor '{}' requesting SAML SP metadata for Org ID '{}'", actorUsername, orgId);
+
+    String metadataXml = configService.generateSpMetadataXml(orgId, actorUsername, actorOrgId, actorRoles);
+
+    return ResponseEntity.ok()
+            .contentType(MediaType.parseMediaType("application/samlmetadata+xml"))
+            .header("Content-Disposition", "attachment; filename=\"sp-metadata-" + orgId + ".xml\"")
+            .body(metadataXml);
+  }
+
+
 
   // --- OAuth2 Configuration Endpoints ---
 

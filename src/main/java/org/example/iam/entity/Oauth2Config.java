@@ -45,8 +45,7 @@ public class Oauth2Config extends Auditable<String> { // Audited by String (user
    * Primary key (UUID) for the OAuth2 configuration record.
    */
   @Id
-  @GeneratedValue(generator = "UUID") // Use standard Hibernate UUID generator
-  @GenericGenerator(name = "UUID", strategy = "org.hibernate.id.UUIDGenerator")
+  @GeneratedValue(strategy = GenerationType.UUID)
   @Column(name = "id", updatable = false, nullable = false, columnDefinition = "BINARY(16)")
   @EqualsAndHashCode.Include // Use ID for equality checks
   private UUID id;

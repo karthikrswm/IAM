@@ -16,11 +16,13 @@ import org.example.iam.exception.BadRequestException;
 import org.example.iam.exception.ConfigurationException; // For config issues
 import org.example.iam.exception.OperationNotAllowedException;
 import org.example.iam.exception.ResourceNotFoundException;
+import org.example.iam.repository.DatabaseRelyingPartyRegistrationRepository;
 import org.example.iam.repository.Oauth2ConfigRepository;
 import org.example.iam.repository.OrganizationRepository;
 import org.example.iam.repository.SamlConfigRepository;
 // Removed unused SecurityUtils import, using params directly
 import org.springframework.security.access.AccessDeniedException; // Use Spring's exception
+import org.springframework.security.saml2.provider.service.registration.RelyingPartyRegistration;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -49,6 +51,11 @@ public class ConfigService {
   private final Oauth2ConfigRepository oauth2ConfigRepository;
   private final AuditEventService auditEventService;
   private final EncryptionService encryptionService;
+  // Inject the RP repository (needed to look up the registration)
+  private final DatabaseRelyingPartyRegistrationRepository relyingPartyRegistrationRepository; // <<< ADDED Injection
+  // Inject the metadata generator service
+  private final SamlMetadataGenerator samlMetadataGenerator; // <<< ADDED Injection
+
   // private final CredentialService credentialService; // Not needed for save/update usually
 
   // --- SAML Configuration Methods ---
@@ -104,93 +111,133 @@ public class ConfigService {
   @Transactional
   public SamlConfigDto saveOrUpdateSamlConfig(UUID orgId, SamlConfigDto dto, String actor, UUID actorOrgId, Set<RoleType> actorRoles) {
     log.info("Actor '{}' saving/updating SAML config for Org ID '{}'", actor, orgId);
-    Organization org = findAndAuthorizeOrgAdminOrSuperAccess(orgId, actor, actorOrgId, actorRoles); // Auth check
-
-    if (org.isSuperOrg()) {
-      throw new OperationNotAllowedException("SAML configuration is not applicable to the Super Organization.");
-    }
-
-    SamlConfig config = samlConfigRepository.findByOrganization(org)
-            .orElseGet(() -> {
-              log.info("No existing SAML config found for Org ID '{}', creating new.", orgId);
-              return SamlConfig.builder().organization(org).build();
-            });
-
+    Organization org = findAndAuthorizeOrgAdminOrSuperAccess(orgId, actor, actorOrgId, actorRoles);
+    if (org.isSuperOrg()) { throw new OperationNotAllowedException("..."); }
+    SamlConfig config = samlConfigRepository.findByOrganization(org).orElseGet(() -> SamlConfig.builder().organization(org).build());
     boolean isNewConfig = (config.getId() == null);
-    AuditEventType eventType = AuditEventType.ORG_CONFIG_UPDATED;
     String actionVerb = isNewConfig ? "created" : "updated";
 
-    // --- Map DTO fields to Entity ---
-    if (!StringUtils.hasText(dto.getServiceProviderEntityId())) {
-      throw new BadRequestException("Service Provider Entity ID is required for SAML configuration.");
-    }
-    if (!StringUtils.hasText(dto.getAssertionConsumerServiceUrl())) {
-      throw new BadRequestException("Assertion Consumer Service (ACS) URL is required for SAML configuration.");
-    }
-
+    // --- Map Basic & Manual IdP Fields ---
+    if (!StringUtils.hasText(dto.getServiceProviderEntityId())) { throw new BadRequestException("SP Entity ID required."); }
+    if (!StringUtils.hasText(dto.getAssertionConsumerServiceUrl())) { throw new BadRequestException("ACS URL required."); }
     config.setIdentityProviderMetadataUrl(dto.getIdentityProviderMetadataUrl());
     config.setServiceProviderEntityId(dto.getServiceProviderEntityId());
     config.setAssertionConsumerServiceUrl(dto.getAssertionConsumerServiceUrl());
     config.setSingleLogoutServiceUrl(dto.getSingleLogoutServiceUrl());
-    config.setNameIdFormat(StringUtils.hasText(dto.getNameIdFormat())
-            ? dto.getNameIdFormat()
-            : "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified");
+    config.setNameIdFormat(StringUtils.hasText(dto.getNameIdFormat()) ? dto.getNameIdFormat() : "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified");
     config.setSignRequests(Boolean.TRUE.equals(dto.getSignRequests()));
     config.setWantAssertionsSigned(Boolean.TRUE.equals(dto.getWantAssertionsSigned()));
+    config.setIdentityProviderEntityId(dto.getIdentityProviderEntityId());
+    config.setSingleSignOnServiceUrl(dto.getSingleSignOnServiceUrl());
+    config.setSingleSignOnServiceBinding(dto.getSingleSignOnServiceBinding());
     config.setAttributeMappingUsername(dto.getAttributeMappingUsername());
     config.setAttributeMappingEmail(dto.getAttributeMappingEmail());
     config.setAttributeMappingRoles(dto.getAttributeMappingRoles());
     config.setEnabled(Boolean.TRUE.equals(dto.getEnabled()));
 
-    // --- Handle Keystore References and Encrypt Passwords ---
+    // --- Handle Keystore References and Encrypt Passwords (Keystore AND Key Passwords) ---
     try {
-      // Use correct getters from DTO and setters for Entity
-      if (StringUtils.hasText(dto.getSpSigningKeystorePathInput())) { // <<< CORRECTED Getter
-        config.setSpSigningKeystorePath(dto.getSpSigningKeystorePathInput()); // <<< CORRECTED Setter
-      }
-      if (StringUtils.hasText(dto.getSpSigningKeyAliasInput())) { // <<< CORRECTED Getter
-        config.setSpSigningKeyAlias(dto.getSpSigningKeyAliasInput()); // <<< CORRECTED Setter
-      }
-      if (StringUtils.hasText(dto.getSpSigningKeystorePasswordInput())) { // <<< CORRECTED Getter
-        config.setSpSigningKeystorePasswordEncrypted(encryptionService.encrypt(dto.getSpSigningKeystorePasswordInput())); // <<< CORRECTED Setter
-        log.debug("Encrypted SP Signing Keystore password for config update.");
-      } else if (isNewConfig && StringUtils.hasText(config.getSpSigningKeystorePath())) {
-        throw new BadRequestException("SP Signing Keystore password is required when setting the keystore path.");
-      }
-
-      if (StringUtils.hasText(dto.getSpEncryptionKeystorePathInput())) { // <<< CORRECTED Getter
-        config.setSpEncryptionKeystorePath(dto.getSpEncryptionKeystorePathInput()); // <<< CORRECTED Setter
-      }
-      if (StringUtils.hasText(dto.getSpEncryptionKeyAliasInput())) { // <<< CORRECTED Getter
-        config.setSpEncryptionKeyAlias(dto.getSpEncryptionKeyAliasInput()); // <<< CORRECTED Setter
-      }
-      if (StringUtils.hasText(dto.getSpEncryptionKeystorePasswordInput())) { // <<< CORRECTED Getter
-        config.setSpEncryptionKeystorePasswordEncrypted(encryptionService.encrypt(dto.getSpEncryptionKeystorePasswordInput())); // <<< CORRECTED Setter
-        log.debug("Encrypted SP Encryption Keystore password for config update.");
-      } else if (isNewConfig && StringUtils.hasText(config.getSpEncryptionKeystorePath())) {
-        throw new BadRequestException("SP Encryption Keystore password is required when setting the keystore path.");
+      // Signing Key
+      if (StringUtils.hasText(dto.getSpSigningKeystorePathInput())) { config.setSpSigningKeystorePath(dto.getSpSigningKeystorePathInput()); }
+      if (StringUtils.hasText(dto.getSpSigningKeyAliasInput())) { config.setSpSigningKeyAlias(dto.getSpSigningKeyAliasInput()); }
+      // Encrypt Keystore Password if provided
+      if (StringUtils.hasText(dto.getSpSigningKeystorePasswordInput())) {
+        config.setSpSigningKeystorePasswordEncrypted(encryptionService.encrypt(dto.getSpSigningKeystorePasswordInput()));
+        log.debug("Encrypted SP Signing Keystore password.");
+      } else if (isNewConfig && StringUtils.hasText(config.getSpSigningKeystorePath())) { throw new BadRequestException("SP Signing Keystore password required."); }
+      // Encrypt Key Alias Password if provided <<< UPDATED
+      if (StringUtils.hasText(dto.getSpSigningKeyPasswordInput())) {
+        config.setSpSigningKeyPasswordEncrypted(encryptionService.encrypt(dto.getSpSigningKeyPasswordInput())); // Save to new field
+        log.debug("Encrypted SP Signing Key Alias password.");
+      } else {
+        config.setSpSigningKeyPasswordEncrypted(null); // Clear if not provided
       }
 
-      if (StringUtils.hasText(dto.getIdpVerificationCertificatePemInput())) { // <<< CORRECTED Getter
-        config.setIdpVerificationCertificatePem(dto.getIdpVerificationCertificatePemInput()); // <<< CORRECTED Setter
+      // Encryption Key (Repeat logic)
+      if (StringUtils.hasText(dto.getSpEncryptionKeystorePathInput())) { config.setSpEncryptionKeystorePath(dto.getSpEncryptionKeystorePathInput()); }
+      if (StringUtils.hasText(dto.getSpEncryptionKeyAliasInput())) { config.setSpEncryptionKeyAlias(dto.getSpEncryptionKeyAliasInput()); }
+      // Encrypt Keystore Password
+      if (StringUtils.hasText(dto.getSpEncryptionKeystorePasswordInput())) {
+        config.setSpEncryptionKeystorePasswordEncrypted(encryptionService.encrypt(dto.getSpEncryptionKeystorePasswordInput()));
+        log.debug("Encrypted SP Encryption Keystore password.");
+      } else if (isNewConfig && StringUtils.hasText(config.getSpEncryptionKeystorePath())) { throw new BadRequestException("SP Encryption Keystore password required."); }
+      // Encrypt Key Alias Password if provided <<< UPDATED
+      if (StringUtils.hasText(dto.getSpEncryptionKeyPasswordInput())) {
+        config.setSpEncryptionKeyPasswordEncrypted(encryptionService.encrypt(dto.getSpEncryptionKeyPasswordInput())); // Save to new field
+        log.debug("Encrypted SP Encryption Key Alias password.");
+      } else {
+        config.setSpEncryptionKeyPasswordEncrypted(null); // Clear if not provided
       }
+
+      // IdP Cert (Unchanged)
+      if (StringUtils.hasText(dto.getIdpVerificationCertificatePemInput())) { config.setIdpVerificationCertificatePem(dto.getIdpVerificationCertificatePemInput()); }
     } catch (Exception e) {
-      log.error("Failed to encrypt keystore password during SAML config update for Org ID {}: {}", orgId, e.getMessage(), e);
-      throw new RuntimeException("Failed to process keystore password.", e);
+      log.error("Failed to encrypt password during SAML config update for Org ID {}: {}", orgId, e.getMessage(), e);
+      throw new RuntimeException("Failed to process credential password.", e);
     }
 
-    // Save the entity
     SamlConfig savedConfig = samlConfigRepository.save(config);
+    auditEventService.logEvent(AuditEventType.ORG_CONFIG_UPDATED, String.format("SAML config for org '%s' %s by %s", org.getOrgName(), actionVerb, actor), actor, "SUCCESS", "SAML_CONFIG", savedConfig.getId().toString(), orgId, "Enabled: " + savedConfig.isEnabled());
     log.info("SAML config ID '{}' {} for Org '{}' by actor '{}'", savedConfig.getId(), actionVerb, org.getOrgName(), actor);
-
-    // Log audit event
-    auditEventService.logEvent(eventType,
-            String.format("SAML config for organization '%s' %s by %s", org.getOrgName(), actionVerb, actor),
-            actor, "SUCCESS",
-            "SAML_CONFIG", savedConfig.getId().toString(), orgId,
-            "Enabled: " + savedConfig.isEnabled());
-
     return SamlConfigDto.fromEntity(savedConfig);
+  }
+
+
+  /**
+   * Generates the SAML 2.0 Service Provider metadata XML for the specified organization.
+   * Requires SUPER role or ADMIN role of the target organization.
+   * Relies on the RelyingPartyRegistration being loaded/available.
+   *
+   * @param orgId      The UUID of the organization.
+   * @param actor      The username of the requesting user.
+   * @param actorOrgId The organization UUID of the requesting user.
+   * @param actorRoles The roles of the requesting user.
+   * @return A String containing the SAML metadata XML.
+   * @throws ResourceNotFoundException if the organization or its enabled SAML config doesn't exist, or if the RelyingPartyRegistration cannot be found.
+   * @throws AccessDeniedException     if the actor lacks permission.
+   * @throws ConfigurationException    if metadata cannot be generated due to config errors or internal issues.
+   */
+  @Transactional(readOnly = true)
+  public String generateSpMetadataXml(UUID orgId, String actor, UUID actorOrgId, Set<RoleType> actorRoles) { // <<< ADDED Method
+    log.info("Actor '{}' attempting to generate SP metadata for Org ID '{}'", actor, orgId);
+    Organization org = findAndAuthorizeOrgAdminOrSuperAccess(orgId, actor, actorOrgId, actorRoles);
+
+    SamlConfig config = samlConfigRepository.findByOrganization(org)
+            .orElseThrow(() -> new ResourceNotFoundException("SAML configuration not found for organization: " + orgId));
+
+    if (!config.isEnabled()) {
+      log.warn("Attempted to generate metadata for disabled SAML config for Org ID '{}'", orgId);
+      throw new ConfigurationException("Cannot generate metadata: SAML configuration is disabled for this organization.");
+    }
+
+    // Construct the registrationId used by the repository
+    String registrationId = relyingPartyRegistrationRepository.generateRegistrationId(orgId); // Use helper method
+
+    // Fetch the built RelyingPartyRegistration
+    RelyingPartyRegistration registration = relyingPartyRegistrationRepository.findByRegistrationId(registrationId);
+
+    if (registration == null) {
+      log.error("Could not find loaded RelyingPartyRegistration for registrationId '{}' (Org ID {}). Cannot generate metadata. Check application startup logs for SAML loading errors.", registrationId, orgId);
+      throw new ResourceNotFoundException("Failed to retrieve loaded SAML registration details required for metadata generation for registrationId: " + registrationId);
+    }
+
+    // Generate the XML using the helper service
+    String metadataXml = samlMetadataGenerator.generateMetadataXml(registration);
+
+    if (metadataXml == null) {
+      log.error("Metadata generation failed (generator returned null) for registrationId '{}' (Org ID {}).", registrationId, orgId);
+      throw new ConfigurationException("Failed to generate SAML Service Provider metadata.");
+    }
+
+    log.info("Successfully generated SAML SP metadata for Org '{}' (ID: {}) requested by actor '{}'",
+            org.getOrgName(), orgId, actor);
+    auditEventService.logEvent(AuditEventType.ORG_CONFIG_UPDATED, // Or a specific type
+            String.format("SAML SP metadata generated for organization '%s'", org.getOrgName()),
+            actor, "SUCCESS",
+            "SAML_CONFIG", config.getId().toString(), orgId,
+            "Metadata generated for entityId: " + registration.getEntityId());
+
+    return metadataXml;
   }
 
   // --- OAuth2 Configuration Methods ---

@@ -9,74 +9,65 @@ import org.example.iam.exception.ConfigurationException;
 import org.example.iam.exception.ResourceNotFoundException;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.security.authentication.AuthenticationServiceException;
-import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.saml2.provider.service.authentication.OpenSaml4AuthenticationProvider;
 import org.springframework.security.saml2.provider.service.authentication.Saml2AuthenticatedPrincipal;
 import org.springframework.security.saml2.provider.service.authentication.Saml2Authentication;
-import org.springframework.security.saml2.provider.service.authentication.Saml2AuthenticationToken;
-import org.springframework.stereotype.Component;
+// Removed Saml2AuthenticationToken import
+// import org.springframework.stereotype.Component; // Keep if using component scanning
 
 import java.util.Collection;
 
 /**
- * Converts a default {@link Saml2AuthenticationToken} (containing external SAML principal)
- * into a {@link Saml2Authentication} object that uses the locally provisioned {@link User}
- * entity as its principal, effectively integrating the JIT-provisioned user into the
- * Spring Security context.
- * <p>
- * This converter is typically used within the Spring Security SAML configuration
- * ({@link org.example.iam.config.SecurityConfig}) to replace the default conversion logic.
- * </p>
+ * Converts the SAML Provider's response token into the final Saml2Authentication,
+ * performing JIT user provisioning via CustomSaml2UserService.
+ * Uses the default converter internally to handle initial conversion steps.
  */
-@RequiredArgsConstructor // Inject dependencies via constructor
+@RequiredArgsConstructor
 @Slf4j
-// Can be a @Component or defined as a @Bean in SecurityConfig
+// Define as @Bean in SecurityConfig unless using @Component scan for this package
 public class CustomSaml2AuthenticationConverter implements Converter<OpenSaml4AuthenticationProvider.ResponseToken, Saml2Authentication> {
 
     private final CustomSaml2UserService customSaml2UserService; // Service for JIT provisioning
 
-    /**
-     * Performs the conversion from the initial SAML token to the final Authentication object.
-     * Handles exceptions during JIT provisioning.
-     *
-     * @param responseToken The token containing the result from the SAML AuthenticationProvider.
-     * @return A Saml2Authentication object with the local User as principal.
-     * @throws AuthenticationServiceException If an error occurs during user provisioning lookup/creation.
-     */
+    // Use static instance of default converter provided by Spring Security
+    private static final Converter<OpenSaml4AuthenticationProvider.ResponseToken, Saml2Authentication> defaultConverter =
+            OpenSaml4AuthenticationProvider.createDefaultResponseAuthenticationConverter();
+
+
     @Override
     public Saml2Authentication convert(OpenSaml4AuthenticationProvider.ResponseToken responseToken) {
 
-        // Delegate to the default converter to produce a Saml2Authentication instance.
-        Converter<OpenSaml4AuthenticationProvider.ResponseToken, Saml2Authentication> defaultConverter =
-                OpenSaml4AuthenticationProvider.createDefaultResponseAuthenticationConverter();
+        // *** Use the default converter to get the initial authentication object ***
+        Saml2Authentication initialAuthentication = defaultConverter.convert(responseToken);
 
-        Saml2Authentication authentication = defaultConverter.convert(responseToken);
+        if (initialAuthentication == null) {
+            log.error("Default SAML response converter returned null authentication object.");
+            throw new AuthenticationServiceException("Failed to process initial SAML response.");
+        }
 
-
-        Saml2AuthenticatedPrincipal principal = (Saml2AuthenticatedPrincipal) authentication.getPrincipal();
+        Saml2AuthenticatedPrincipal principal = (Saml2AuthenticatedPrincipal) initialAuthentication.getPrincipal();
         String registrationId = responseToken.getToken().getRelyingPartyRegistration().getRegistrationId();
-        String samlUsername = principal.getName(); // NameID or equivalent
+        String samlUsername = principal.getName();
 
         log.debug("CustomSaml2AuthenticationConverter processing SAML response for registrationId: {}, SAML Principal Name: {}",
                 registrationId, samlUsername);
 
         try {
-            // 1. Use CustomSaml2UserService to find or create the local user based on SAML principal
+            // Perform JIT provisioning using the dedicated service
             User localUser = customSaml2UserService.processSamlUser(principal, registrationId);
 
-            // 2. Extract authorities from the LOCAL user entity
+            // Extract authorities from the *local* user entity
             Collection<? extends GrantedAuthority> authorities = localUser.getAuthorities();
             log.debug("Using authorities from local user '{}': {}", localUser.getUsername(), authorities);
 
-            // 3. Create the final Authentication object.
+            // Create the final Authentication object
             Saml2Authentication finalAuthentication = new Saml2Authentication(
-                    principal, // Use original SAML principal
-                    authentication.getSaml2Response(),
-                    authorities // Use authorities derived from our local User
+                    principal,
+                    initialAuthentication.getSaml2Response(),
+                    authorities // <<< Use authorities derived from our local User
             );
-            finalAuthentication.setDetails(localUser);
-
+            finalAuthentication.setDetails(localUser); // Set local user as details
 
             log.info("Successfully converted SAML token to final Saml2Authentication for local user '{}' (originally {})",
                     localUser.getUsername(), samlUsername);

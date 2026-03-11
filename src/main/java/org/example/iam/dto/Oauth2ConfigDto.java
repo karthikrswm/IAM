@@ -62,7 +62,7 @@ public class Oauth2ConfigDto {
   // It's marked writeOnly so it doesn't appear in response schemas.
   // Service layer will handle encrypting this before storing in the entity.
   @Schema(description = "The Client Secret obtained from the OAuth2 provider. Provide this only when creating or changing the secret. Leave blank/null if not updating the secret.",
-          requiredMode = Schema.RequiredMode.NOT_REQUIRED, writeOnly = true, example = "GOCSPX-...", nullable = true)
+          requiredMode = Schema.RequiredMode.NOT_REQUIRED, accessMode = Schema.AccessMode.WRITE_ONLY, example = "GOCSPX-...", nullable = true)
   private String clientSecretInput; // Input only field (plaintext)
 
   @URL(message = "Authorization URI must be a valid URL, if provided.")

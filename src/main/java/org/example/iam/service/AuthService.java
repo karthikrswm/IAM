@@ -44,8 +44,8 @@ import java.util.stream.Collectors;
  * </p>
  */
 @Service
-@RequiredArgsConstructor // Creates constructor for final fields
 @Slf4j
+@RequiredArgsConstructor
 public class AuthService {
 
   // --- Dependencies ---
@@ -56,7 +56,7 @@ public class AuthService {
   private final PasswordEncoder passwordEncoder;
   private final AuditEventService auditEventService;
   private final NotificationService notificationService;
-  private final @Lazy UserService userService; // Lazy inject UserService
+  private final UserService userService; // Lazy inject UserService
 
   // --- Configuration Properties ---
   @Value("${security.verification.token.expire-minutes:1440}") // Default 24 hours
