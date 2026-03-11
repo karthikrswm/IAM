@@ -1,0 +1,189 @@
+# File: docker-compose.yml
+# Defines infrastructure services AND the iam-consumer application service.
+# The main iam-service API will be run locally from the IDE.
+
+version: '3.8'
+
+services:
+  # --- Infrastructure Services ---
+
+  mysql_db:
+    image: mysql:8.0
+    container_name: iam_mysql
+    restart: unless-stopped
+    environment:
+      # Reads directly from .env file
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    ports:
+      # Expose port to host for local iam-service connection
+      - "${MYSQL_PORT}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      # Uses variables passed from .env
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u${MYSQL_USER}", "-p${MYSQL_PASSWORD}"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  redis_cache:
+    image: redis:7-alpine
+    container_name: iam_redis
+    restart: unless-stopped
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    ports:
+      # Expose port to host for local iam-service connection
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      sh -c "if [ -n \"$REDIS_PASSWORD\" ]; then
+               redis-server --requirepass \"$REDIS_PASSWORD\"
+             else
+               redis-server
+             fi"
+    healthcheck:
+      test: >
+        sh -c "if [ -n \"$REDIS_PASSWORD\" ]; then
+                 redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG
+               else
+                 redis-cli ping | grep PONG
+               fi"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis_commander:
+    image: rediscommander/redis-commander:latest
+    container_name: iam_redis_commander
+    restart: unless-stopped
+    environment:
+      # Format is Name:Host:Port:DbIndex:Password
+      # If using a password in your .env, uncomment the second line and remove the first
+      - REDIS_HOSTS=local:redis_cache:6379
+      # - REDIS_HOSTS=local:redis_cache:6379:0:${REDIS_PASSWORD}
+    ports:
+      - "8081:8081"
+    depends_on:
+      redis_cache:
+        condition: service_healthy
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: iam_mailhog
+    restart: unless-stopped
+    ports:
+      # Expose ports to host for local iam-service connection and UI access
+      - "${MAILHOG_SMTP_PORT}:1025"
+      - "${MAILHOG_UI_PORT}:8025"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  zookeeper:
+    image: zookeeper:latest
+    container_name: iam_zookeeper
+    restart: unless-stopped
+    ports:
+      # Expose Zookeeper port (primarily needed by Kafka, but can be exposed if needed)
+      - "${ZOOKEEPER_PORT}:2181"
+    volumes:
+      - zookeeper_data:/bitnami/zookeeper
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    healthcheck:
+      test: ["CMD", "zkServer.sh", "status"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  kafka:
+    image: apache/kafka:latest
+    container_name: iam_kafka
+    restart: unless-stopped
+    ports:
+      # Expose EXTERNAL listener port to host for local iam-service connection
+      - "${KAFKA_HOST_PORT}:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    environment:
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: INTERNAL://:9093,EXTERNAL://:9092,CONTROLLER://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9093,EXTERNAL://localhost:${KAFKA_HOST_PORT}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9094
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 60s
+
+  kafdrop:
+    image: obsidiandynamics/kafdrop:latest
+    container_name: iam_kafdrop
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      # Connects to internal listener of Kafka broker
+      KAFKA_BROKERCONNECT: ${KAFKA_BOOTSTRAP_SERVERS} # Reads internal address from .env
+      JVM_OPTS: "-Xms32M -Xmx64M"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+
+  # --- Application Services ---
+
+  # iam-service: # <<< COMMENTED OUT / REMOVED - Will run locally from IDE >>>
+
+  iam-consumer: # Definition for the consumer service running in Docker
+    container_name: iam_kafka_consumer
+    # image: azul/zulu-openjdk-alpine:21 # <<< REMOVED image override
+    build: # <<< ADDED Build Section Back
+      context: ../iam-consumer # Path to the separate consumer project
+      dockerfile: Dockerfile # Assumes Dockerfile uses azul/zulu-openjdk-alpine:21
+    restart: unless-stopped
+    environment:
+    # Activate the 'docker' Spring profile inside the container
+      - SPRING_PROFILES_ACTIVE=docker
+      # Consumer (in Docker) uses the INTERNAL Kafka listener address (kafka:9093)
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS}
+      # Pass topic names from .env file
+      - KAFKA_TOPIC_AUDIT_EVENTS=${KAFKA_TOPIC_AUDIT_EVENTS}
+      - KAFKA_TOPIC_AUDIT_EVENTS_DLT=${KAFKA_TOPIC_AUDIT_EVENTS_DLT}
+      # Add other env vars if consumer needs them (e.g., DB connection if it writes status)
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+
+# --- Named Volumes ---
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  zookeeper_data:
+    driver: local
+  kafka_data:
+    driver: local
